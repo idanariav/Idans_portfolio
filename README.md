@@ -1,6 +1,6 @@
 
-This repository includes several key projects written during my former occupation or as part of a personal indipendent project.
-These includes projects mainly in R.
+This repository includes several key projects written during my former occupation as a data analyst 
+or as part of a personal independent project.
 The following explanations are per code.
 
 # File - avodata_project.R
