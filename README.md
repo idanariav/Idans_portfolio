@@ -3,7 +3,7 @@ This repository includes several key projects written during my former occupatio
 These includes projects mainly in R.
 The following explanations are per code.
 
-file - avodata_code_21_07_21.R
+file - avodata_project.R
 
 This code is written in R, and demonstrates the steps and methods used to create the database for the Avodata project.
 Avodata is a public website that presents several characteristics, mainly wage, for different occupations and education levels, 
