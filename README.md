@@ -3,7 +3,7 @@ This repository includes several key projects written during my former occupatio
 These includes projects mainly in R.
 The following explanations are per code.
 
-file - avodata_project.R
+# File - avodata_project.R
 
 This code is written in R, and demonstrates the steps and methods used to create the database for the Avodata project.
 Avodata is a public website that presents several characteristics, mainly wage, for different occupations and education levels, 
@@ -12,6 +12,14 @@ The project involves merging and modifying data from different sources using R,
 for instance income data from the ITA (Israel Tax Authority), demographic data from the CBS (central bureau of statistics) 
 and education data from the CHE (Council for Higher Education).
 Link to the project website - https://avodata.labor.gov.il/
+
+The code was used at the CBS research room, which includes limited availability of R/Rstudio updates and R packages. (R version - 3.6).
+This limitation forced me to create workarounds when relevant packages were missing.
+
+# File - Labor_monthly_analysis
+As part of my former occupation as a data analyst for the Ministry of Labor and Social Affairs,
+I used to create monthly analysis of Israel's Labor market such as Employment/Unemployed rate by different communities
+such as Arabs, non-orthodox jews, etc based on the monthly CBS surveys.
 
 The code was used at the CBS research room, which includes limited availability of R/Rstudio updates and R packages. (R version - 3.6).
 This limitation forced me to create workarounds when relevant packages were missing.
