@@ -23,3 +23,9 @@ such as Arabs, non-orthodox jews, etc based on the monthly CBS surveys.
 
 The code was used at the CBS research room, which includes limited availability of R/Rstudio updates and R packages. (R version - 3.6).
 This limitation forced me to create workarounds when relevant packages were missing.
+
+# File - R basics
+This code is a useful toolbox which includes basic and advanced R tips for various aspects of coding such as data cleaning, 
+merging, visualisation, etc. It agreggates most of the things I learned the hard way, mostly through extensive searches in Stack Overflow,
+so that you wont have to.
+I see it a complementry tool similar to exisiting cheatsheets to formal training or as a go-to guide while on the job.
