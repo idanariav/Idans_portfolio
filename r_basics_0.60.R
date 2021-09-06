@@ -1,5 +1,4 @@
 
-
 # Introduction ------------------------------------------------------------
 
 'The purpose of this code is to give you basic understanding of using R language and Rstudio'
@@ -151,7 +150,15 @@ args(mutate)
 
 # how to add a new column - with the "mutate" function
 data <- data %>% mutate(new_column = 5)
-# how to add a new column/modifiy existing column with conditions (based on other column), what comes before the "~" is the condition, and what comes after is the "if true"/result
+
+#how to move a column in the table to a different place
+
+# the ".before" or ".after" arguments also exist inside the mutate 
+# function. so you can create and relocate in the same code line.
+data <- data %>% relocate(new_column,.before = column_num_5)
+
+
+# how to add a new column/modify existing column with conditions (based on other column), what comes before the "~" is the condition, and what comes after is the "if true"/result
 # in this case, the "new column" is a binary column, which includes text, and has only 2 options, either "below 5", or "euqal or bigger than 5")
 data <-
   data %>% mutate(new_column = case_when(old_column < 5 ~ "below 5", old_column >= 5 ~ "equal or bigger than 5"))
@@ -205,7 +212,9 @@ my_iris %>%
                                     n = 1,
                                     default = NA))
 
-
+#how to add a column, while removing all other columns
+#useful for very specific situations (dont have examples in mind)
+iris1 <- iris %>% transmute(ratio = Sepal.Length/Sepal.Width)
 # summarizing data --------------------------------------------------------
 
 # useful link with basic things you can do with summarise - 
@@ -331,15 +340,30 @@ compare_df_cols(DF1, DF2)
 
 # data table syntax (dplyr alternative) -----------------------------------
 
-# the data.table package has a different syntax then dplyr for doing basic modifications such as adding/changing columns, its useful when the data.frame is very large, or doing very specific changes
-# for exp, since data.table filter/grouping is per rows and not permanent for the whole data, its easier to change specific rows in data.table without having to narrow the data and merging all the different subgroups
+# the data.table package has a different syntax then dplyr. although its' syntax is less intuitive, the results are much faster.
+# thus, when working with very large datasets or when preforming a lot of actions, it is recommended to use data.table
 
 # when working with data.table syntax, its important that the data object will be defined as DT. for that use setDT
-# when using dplyr syntax on a data.table, it will probably change the type back to data.frame. therefore its important to use setDT again
+# when using dplyr syntax on a data.table, it will change the type back to data.frame. therefore its important to use setDT again
 setDT(data)
+
+# attention: important note when working with data.tables
+# as default, any changes made to a DT would also change the original data
+# for example, this line would not only create t1, but also add the column in "iris" itself
+t1 <- iris[,new_col := "hello"]
+# the only exception to that is when you filter. for example, this would not change the original (iris) DT
+t1 <- iris[Species=="setosa",new_col := "hello"]
+# that is why when you include DT syntax in a function that has filter data, you must always save it into a new DT
+data <- data[age<5] # example for how to write a line in a function
+# to avoid changing the original DT, you must first copy it using copy function
+#notice that writing new_data <- data isnt enough, you have to include the "copy"
+new_data <- copy(data)
+
 
 # adding columns
 data[, new_col := col1 + col2]
+# adding multiple columns
+data[,`:=`(new_col1=col1*2, new_col2=col2*2)]
 # filter rows
 data[col1 == 6 & col2 == 4, ]
 # group by
@@ -353,6 +377,14 @@ data[condition == 1, new_col := sum(income), by = year]
 # create column based on criterion (similar to "case_when" for dplyr)
 # here a new col is created with default value of 1, but when value of col_1 is greater than col_2, the new_col value is replaced as 1
 data[, new_col := 0][col_1 > col_2, new_col := 1]
+
+# an alternative to dplyr "case_when", the arguments are (test1,value1,test2,value2...)
+t1 <- iris[,new_col := fcase(Species=="setosa",'set',Species=="versicolor","ver",default="other")]
+
+#summarize data - notice that the equal sign is just "=" without ":="
+data[,new_col = mean(col), by = year]
+#multiple summaries
+data[,.(new_col1 = mean(col1),new_col2=mean(col2))]
 
 # setnames - a useful function to change column names by order which they appear in each vector (the first "old_col" will be replaced by the first "new_col"...)
 setnames(data,
@@ -377,10 +409,90 @@ setcolorder(data, c("col_1", "col_2", ...))
 # fill - default value for missing computations
 DF[, lag_col := shift(basic_col, n = 1, fill = 0), by = group]
 
-#rows and column totals
-data[, total:=Reduce(`+`, .SD),.SDcols = grep("N_", names(data), value = T)]
-data %<>% 
-  adorn_totals("row")
+#the .SD tool
+# .SD tool basically preforms a given function for every column in the DT or from a selected vector of columns
+# useful when creating summary tables for each column, or changing several columns at the same time
+
+#slice first N rows by each group
+#first, you should sort the coulmns. adding a "-" turns it into descending
+setorder(iris,-petal.length)
+#get first 3 rows by group
+iris[,.SD[1:3],by=species]
+
+#quick summary table (the "lapply" is to show which function to return)
+iris[,lapply(.SD, mean), .SDcols = c(1,2,3) ,by = Species]
+
+#quick column adjustments (in this example, turn into  character columns)
+iris[(selected_columns) := lapply(.SD, as.character)]
+
+#if you want to merge two types of .SD summary tables
+t1 <- iris[,lapply(.SD, mean), .SDcols = c(1,2,3,4) ,by = Species]
+t2 <- iris[,lapply(.SD, length),.SDcols = c(1,2,3,4) ,by = Species]
+merge <- t1[t2, on = "Species"]
+
+#another option is to get it as a long table (problem, doesnt recognize when using several columns, dont know which answer belongs to which columns)
+t3 <- iris[,.(obs_sepal_length = lapply(.SD, length),avg_sepal_length = lapply(.SD, mean)),.SDcols = c(1,2,3,4) ,by = Species]
+
+#dynamic column names:
+# when creating new columns (argument as string)
+new_col_fun <- function(data,new_col){
+  new <- copy(data)
+  new[,(new_col):="example"]
+}
+t1 <- new_col_fun(iris,"testing")
+#also works with multiple columns
+t1 <- new_col_fun(iris,c("testing","testing2"))
+
+# when creating new columns (argument as non-string)
+# this is of course only relevant for times where you want to update
+# an existing column by reference
+# this actually searches the column by its index
+new_col_fun <- function(data,new_col){
+  new <- copy(data)
+  var_loc <- which(colnames(new)==rlang::expr_text(substitute(new_col,env = environment())))
+  new[,(var_loc):="example"]
+}
+t1 <- new_col_fun(iris,Species)
+
+
+# when using by (argument as string)
+sum_by <- function(data,by_vars){
+  new <- copy(data)
+  new[,.(sum = sum(Petal.Length,na.rm = T)), by = by_vars]
+}
+
+t1 <- sum_by(iris,"Species")
+#also works with multiple columns
+iris[,var_length := fcase(Petal.Length>1&Petal.Length<2,"between 1-2",Petal.Length<4,"between 2-4",default = "larger than 4")]
+t1 <- sum_by(iris,c("Species","var_length"))
+
+# when using by (argument as non-string)
+# notice that the new column names are var_new1 and var_new2, and not the original column names
+sum_by <- function(data,var1,var2){
+  var_new1 <- substitute(var1)
+  var_new2 <- substitute(var2)
+  new <- copy(data)
+  new[,.(sum = sum(Petal.Length,na.rm = T)), by = list(eval(var_new1),eval(var_new2))]
+}
+
+t1 <- sum_by(data=iris,var1=Species,var2=var_length)
+
+# when using paste (argument as string)
+paste_dt <- function(data,var){
+  new <- copy(data)
+  new_var <- parse(text=var)
+  new[,group_name := paste("hello",eval(new_var),sep="_")]
+}
+t1 <- paste_dt(iris,"Species")
+
+# when using paste (argument as non-string)
+paste_dt <- function(data,var){
+  new <- copy(data)
+  var_new <- substitute(var)
+  new[,group_name := paste("hello",eval(var_new),sep="_")]
+}
+t1 <- paste_dt(iris,Species)
+
 # checking your data/code -------------------------------------------------
 
 value <- c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
@@ -622,14 +734,14 @@ lapply(packages,libarary)
 
 # lists -------------------------------------------------------------------
 
-# the first option is to create for example different results as different objects, and then merge them
+# when working with lists, the first option is to create for example different results as different objects, and then merge them
 pattern_results_1 <- data %>% func(arg1, arg2)
 pattern_results_2 <- data %>% func(arg3, arg4)
 results <- mget(ls(pattern = "pattern"))
-# if later you want to combin all the results into the same table, assuming you have identical columns, use bind_rows on the list of DF
+# if later you want to combine all the results into the same table, assuming you have identical columns, use bind_rows on the list of DF
 results_combined <- bind_rows(results)
 
-# the second (and prefered option) is to create the results already in a list, making it easier to operate
+# the second (and preferred option) is to create the results already in a list, making it easier to operate
 # (for exp if you want to run the same function on all results) and to export (write_xlsx needs lists anyway)
 # first you need to create the empty list
 results <- list()
@@ -955,9 +1067,9 @@ data[, .SD[.(factor_col=c(levels(factor_col))), on="factor_col"], by=.(group1,gr
 # you can duplicate existing tables to make them longer:
 iris <- iris %>% slice(rep(1:n(), each = 10000)) #duplicates each row 10,000 times
 
+#rows and column totals
+data %<>% 
+  adorn_totals("row") #this gives that total by row (sum of all rows per columns)
+#if the data is already numeric, you can just use adorn_totals for row and column together
+#you can also assign names to the new total rows/column, and select which columns to sum
 
-# missions for this code --------------------------------------------------
-
-# add to the code:
-#1) working with regressions
-#3) working with online data (api and such)
