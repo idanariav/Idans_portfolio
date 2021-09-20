@@ -23,7 +23,6 @@ RELEVANT_COLUMNS <- #this takes only the relevant columns necessary from Saka, u
   c("shnatseker","semelmishlachyad","mishkalshnati","misparzehut_fic","leom","ramatdat","semelanafkalkali","gil","machozmegurim",
                       "machozyishuvavoda","nayadutyishuvavoda","min","anafkalkalink","muasak","teudagvoha","shaotbederechklal","shaotavodalemaase","shavuapkida")
 PACKAGES <- c("crayon","dplyr","data.table","forcats","tidyr","openxlsx","haven","readr","cli","utf8","stringi","magrittr","janitor") #all the list of packages to be loaded, in some cases the loading order of the packages is important, so don't switch the order without reason
-LIBLOC<- "D:\\Research\\RoniS_12730180_Research\\r_packages\\3.6" #point to the location where the packages are installed. verify that this location is correct otherwise the packages wont load
 
 
 #turn of scientific notation
@@ -32,10 +31,9 @@ options(scipen=999)
 
 # 2) Set-up: Loading Packages ---------------------------------------------
 
-# using libraries in the research room is different. the location of the packages has to be specified (lib.loc). see following code
-lapply(PACKAGES,library,lib.loc = LIBLOC,character.only = T)
-requireNamespace("plyr",lib.loc = LIBLOC) #needed only for few specefic purposes and has a lot of "conflicts" with "dplyr", thats why i'm using
-requireNamespace("rlang",lib.loc = LIBLOC) #needed only for few specefic purposes and perhaps has "conflicts"
+lapply(PACKAGES,library,character.only = T)
+requireNamespace("plyr") #needed only for few specefic purposes and has a lot of "conflicts" with "dplyr", thats why i'm using
+requireNamespace("rlang") #needed only for few specefic purposes and perhaps has "conflicts"
 #"requirenamesspace" instead of library. that means that i can use the packages, but only if i include the name before, such as plyr::rbind.fill, which avoids the conflicts.
 
 #crayon - #for some reason this is necessary to load "dplyr" package
