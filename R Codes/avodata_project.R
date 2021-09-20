@@ -1,9 +1,6 @@
 
 # 1) Set-up: Global Vars --------------------------------------------------
 
-#tell R where to save and load files from
-setwd( "D:\\Research\\RoniS_12730180_Research\\IdanA")
-
 #these vars are useful for some parts of the code (mostly export and analysis), and for convenience its easier to put them all in one place
 #you must make sure that all the relevant source databases are in this folder. especially important when including new files
 USED_SOURCES <- ".\\input_data\\used\\" # the ".\\" means that its relative to the "wd" you defined, for exp - here its "in your wd, look for the "input data" folder..."
