@@ -1,6 +1,7 @@
 
 This repository includes several key projects written during my former occupation as a data analyst 
 or as part of a personal independent project.
+please note that due to certain limitations, some of the codes are partial to avoid distributing sensative informative.
 The following explanations are per code.
 
 # File - avodata_project.R
