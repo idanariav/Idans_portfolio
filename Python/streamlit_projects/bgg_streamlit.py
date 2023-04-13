@@ -7,9 +7,8 @@ from streamlit_utils import config_page, create_about_me_section, SessionNavigat
     prepare_navigation_section, create_contact_form
 
 # constants
-WORKING_FOLDER = os.getcwd()
-CSS_PATH = os.path.join(WORKING_FOLDER, "style", "style.css")
-INPUTS_FOLDER = os.path.join(WORKING_FOLDER, "streamlit_recommender")
+
+INPUTS_FOLDER = os.path.join("streamlit_recommender")
 GAMES_INFO_FILENAME = "sample_games_info.feather"
 REVIEWS_FILENAME = "sample_reviews.feather"
 LIST_LOCATOR = re.compile(r"\[(.*)\]")
@@ -139,7 +138,7 @@ def create_model_explanation():
 
 def main():
     # general set up
-    config_page(css_path=CSS_PATH)
+    config_page()
     recommendation_navigation = SessionNavigation(button_key='recommendation_number')
     games_found = False
     # about me section
@@ -180,7 +179,7 @@ def main():
             with st.container():
                 st.write("---")
                 st.write("Navigate between recommendations")
-                back_button, next_button, prev_button, number = prepare_navigation_section(key=recommendation_navigation.button_key)
+                back_button, next_button, prev_button, number = prepare_navigation_section()
                 if next_button:
                     recommendation_navigation.next_result()
                 if prev_button:

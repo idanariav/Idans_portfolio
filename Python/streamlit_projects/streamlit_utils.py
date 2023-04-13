@@ -1,6 +1,10 @@
 import streamlit as st
 import requests
 from streamlit_lottie import st_lottie
+import os
+
+DIR_PATH = os.path.dirname(__file__)
+CSS_PATH = os.path.join(DIR_PATH, "style", "style.css")
 
 
 def load_animation(url):
@@ -11,7 +15,7 @@ def load_animation(url):
 
 
 def local_css(file_path):
-    with open(file=file_path) as css_file:
+    with open(file_path) as css_file:
         st.markdown(f"<style>{css_file.read()}</style>", unsafe_allow_html=True)
 
 
@@ -51,7 +55,7 @@ def create_contact_form():
         st.empty()
 
 
-def prepare_navigation_section(key, col_number=12):
+def prepare_navigation_section(col_number=12):
     prev, number, following, back, *rest = st.columns(col_number)
     with prev:
         prev_button = st.button(label="Back")
@@ -62,9 +66,9 @@ def prepare_navigation_section(key, col_number=12):
     return back_button, next_button, prev_button, number
 
 
-def config_page(css_path):
+def config_page():
     st.set_page_config(page_title="My website", page_icon=":tada:", layout="wide")
-    local_css(file_path=css_path)
+    local_css(file_path=CSS_PATH)
 
 
 class SessionNavigation(object):
