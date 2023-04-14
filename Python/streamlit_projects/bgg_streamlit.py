@@ -4,15 +4,18 @@ import streamlit as st
 import ast
 import re
 from streamlit_utils import config_page, create_about_me_section, SessionNavigation, \
-    prepare_navigation_section, create_contact_form
+    prepare_navigation_section, create_contact_form, DIR_PATH
 
 # constants
 
-INPUTS_FOLDER = os.path.join("streamlit_recommender")
+INPUTS_FOLDER = os.path.join(DIR_PATH, "streamlit_recommender")
 GAMES_INFO_FILENAME = "sample_games_info.feather"
 REVIEWS_FILENAME = "sample_reviews.feather"
 LIST_LOCATOR = re.compile(r"\[(.*)\]")
 MIN_CORRELATION = 0
+YOUTUBE_PREFIX = "https://www.youtube.com/results"
+AMAZON_PREFIX = "https://www.amazon.com/s"
+BGG_PREFIX = "https://boardgamegeek.com/boardgame"
 
 
 def extract_str_to_unique_list(df, column):
@@ -23,13 +26,13 @@ def extract_str_to_unique_list(df, column):
     return entities_list
 
 
-
 @st.cache_data
 def load_data():
     games_info = pd.read_feather(os.path.join(INPUTS_FOLDER, GAMES_INFO_FILENAME))
     sample_reviews = pd.read_feather(os.path.join(INPUTS_FOLDER, REVIEWS_FILENAME))
     games_matrix = sample_reviews.pivot_table(index='user', columns='id', values='rating')
     return games_info, games_matrix
+
 
 @st.cache_data
 def load_game_attributes(games_info):
@@ -41,12 +44,12 @@ def load_game_attributes(games_info):
 
 
 def format_list_output(option):
-    new_option = option.replace("_"," ").capitalize()
+    new_option = option.replace("_", " ").capitalize()
     return new_option
 
 
 def extract_single_entity_from_list(df_col, single_game_attributes):
-    single_entity = LIST_LOCATOR.match(single_game_attributes[df_col]).group(1).replace("'","")
+    single_entity = LIST_LOCATOR.match(single_game_attributes[df_col]).group(1).replace("'", "")
     single_entity = single_entity.split(",")[0]
     return single_entity
 
@@ -66,9 +69,9 @@ def create_recommendation_section(best_recommendation, game_name_adjusted, game_
         st.image(best_recommendation.thumbnail)
     with text_col:
         st.markdown(f"""
-                        :globe_with_meridians:[Game Page](https://boardgamegeek.com/boardgame/{best_recommendation.id}/{game_name_adjusted})\n
-                        :package:[Amazon](https://www.amazon.com/s?k={game_name_search + "+board+game"})\n
-                        :video_camera:[Tutorials](https://www.youtube.com/results?search_query={game_name_search + "+gameplay"})
+                        :globe_with_meridians:[Game Page]({BGG_PREFIX}/{best_recommendation.id}/{game_name_adjusted})\n
+                        :package:[Amazon]({AMAZON_PREFIX}?k={game_name_search + "+board+game"})\n
+                        :video_camera:[Tutorials]({YOUTUBE_PREFIX}?search_query={game_name_search + "+gameplay"})
             """)
     with st.expander("See Description"):
         st.write(best_recommendation.description)
@@ -111,8 +114,10 @@ def create_optional_filters(attributes_dict):
     filters = {}
     filter_left, filter_mid, filter_right = st.columns(3)
     with filter_left:
-        filters["max_players"] = st.slider(min_value=2, max_value=attributes_dict['max_players'], key="players_selector",
-                                label="Filter by player count", value=attributes_dict['max_players'], step=1)
+        filters["max_players"] = st.slider(min_value=2, max_value=attributes_dict['max_players'],
+                                           key="players_selector",
+                                           label="Filter by player count",
+                                           value=attributes_dict['max_players'], step=1)
     with filter_mid:
         filters["same_designer"] = st.checkbox(label="Same designer", key='designer_selector')
         filters["same_publisher"] = st.checkbox(label="Same publisher", key='publisher_selector')
@@ -173,7 +178,7 @@ def main():
                                                       games_matrix=games_matrix)
 
             # filter results
-            single_game_attributes = games_info.loc[games_info['id'] == game_id,:].to_dict('records')[0]
+            single_game_attributes = games_info.loc[games_info['id'] == game_id, :].to_dict('records')[0]
             recommender_results = run_default_filters(game_id=game_id, recommender_results=recommender_results)
 
             with st.container():

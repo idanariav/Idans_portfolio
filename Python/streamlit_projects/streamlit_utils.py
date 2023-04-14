@@ -5,6 +5,9 @@ import os
 
 DIR_PATH = os.path.dirname(__file__)
 CSS_PATH = os.path.join(DIR_PATH, "style", "style.css")
+ANIMATION_URL = "https://assets3.lottiefiles.com/private_files/lf30_ajzyv37m.json"
+PORTFOLIO_URL = "https://github.com/idanariav/Idans_portfolio/Python"
+LINKEDIN_URL = "https://www.linkedin.com/in/idan-ariav/"
 
 
 def load_animation(url):
@@ -22,7 +25,7 @@ def local_css(file_path):
 def create_about_me_section():
     st.subheader("Hey, my name is Idan Ariav :wave:")
     about_text, about_image = st.columns((1, 2))
-    animation = load_animation(url="https://assets3.lottiefiles.com/private_files/lf30_ajzyv37m.json")
+    animation = load_animation(url=ANIMATION_URL)
     with about_text:
         with st.container():
             st.title("Data Analyst")
@@ -30,8 +33,8 @@ def create_about_me_section():
             I am passionate about the field of data science, 
             and exploring new ways of harnessing machine learning 
             into meaningful tangible insights""")
-            st.markdown("Explore additional projects: [Github](https://github.com/idanariav/Idans_portfolio)")
-            st.markdown("View linkedin profile: [Linkedin](https://www.linkedin.com/in/idan-ariav/)")
+            st.markdown(f"Explore additional projects: [Github]({PORTFOLIO_URL})")
+            st.markdown(f"View linkedin profile: [Linkedin]({LINKEDIN_URL})")
     with about_image:
         st_lottie(animation_data=animation, height=300, key='dashboard')
 
