@@ -16,6 +16,8 @@ MIN_CORRELATION = 0
 YOUTUBE_PREFIX = "https://www.youtube.com/results"
 AMAZON_PREFIX = "https://www.amazon.com/s"
 BGG_PREFIX = "https://boardgamegeek.com/boardgame"
+SOURCE_CODE = "https://github.com/idanariav/Idans_portfolio/blob/main/Python/streamlit_projects/bgg_streamlit.py"
+KAGGLE_NOTEBOOK = "https://www.kaggle.com/code/idanariav/board-game-recommender"
 
 
 def extract_str_to_unique_list(df, column):
@@ -130,7 +132,7 @@ def create_optional_filters(attributes_dict):
     return filters
 
 
-def create_model_explanation():
+def create_model_explanation(source_code, notebook):
     st.write("---")
     st.title("Board game recommendation")
     st.write("""
@@ -139,6 +141,8 @@ def create_model_explanation():
         Simply choose a game and see the recommendation.\n
         To make the experience more smooth, this is limited to the top 500 ranked games.
         """)
+    st.markdown(f"[Underling Code]({source_code})")
+    st.markdown(f"[Kaggle Notebook]({notebook})")
 
 
 def main():
@@ -151,7 +155,7 @@ def main():
 
     # model explanation
     with st.container():
-        create_model_explanation()
+        create_model_explanation(source_code=SOURCE_CODE, notebook=KAGGLE_NOTEBOOK)
     load = st.checkbox(label='Load Data', key="load_data")
 
     if load:
