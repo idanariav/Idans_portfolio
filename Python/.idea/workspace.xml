@@ -1,10 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="2c80d4d2-5d03-47be-bd4f-35e10ce8ae3a" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/streamlit_projects/bgg_streamlit.py" beforeDir="false" afterPath="$PROJECT_DIR$/streamlit_projects/bgg_streamlit.py" afterDir="false" />
-    </list>
+    <list default="true" id="2c80d4d2-5d03-47be-bd4f-35e10ce8ae3a" name="Changes" comment="" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -218,7 +215,7 @@
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/streamlit_projects/bgg_streamlit.py</url>
-          <line>148</line>
+          <line>149</line>
           <option name="timeStamp" value="14" />
         </line-breakpoint>
       </breakpoints>
