@@ -33,6 +33,24 @@ class dfCleaner(object):
         return index_list
 
 
-logging.basicConfig(format='%(asctime)s %(message)s')
-logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
+class MyLogger(logging.Logger):
+    def __new__(cls, name, level=logging.NOTSET):
+        return logging.getLogger(name)
+
+
+def logger_setup():
+    # Set up the logger
+    logger = MyLogger('basic_logger')
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    # Create a stream handler and set the level to DEBUG
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.DEBUG)
+
+    # Create a formatter and set it for the stream handler
+    formatter = logging.Formatter('[%(levelname)s] %(asctime)s: %(message)s')
+    stream_handler.setFormatter(formatter)
+
+    # Add the stream handler to the logger
+    logger.addHandler(stream_handler)
