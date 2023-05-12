@@ -30,11 +30,11 @@ def create_about_me_section():
         with st.container():
             st.title("Data Analyst")
             st.write("""
-            I am passionate about the field of data science, 
-            and exploring new ways of harnessing machine learning 
-            into meaningful tangible insights""")
-            st.markdown(f"Explore additional projects: [Github]({PORTFOLIO_URL})")
-            st.markdown(f"View linkedin profile: [Linkedin]({LINKEDIN_URL})")
+            I have a strong passion for the field of data science,
+            and a deep interest in exploring innovative approaches to harnessing the power of machine learning. 
+            My goal is to transform raw data into valuable and actionable insights that have a real impact.""")
+            st.markdown(f"Additional projects: [Github]({PORTFOLIO_URL})")
+            st.markdown(f"Linkedin profile: [Linkedin]({LINKEDIN_URL})")
     with about_image:
         st_lottie(animation_data=animation, height=300, key='dashboard')
 
