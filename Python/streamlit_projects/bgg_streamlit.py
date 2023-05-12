@@ -136,10 +136,10 @@ def create_optional_filters(attributes_dict: dict) -> dict:
 
 def create_model_explanation(source_code: str, notebook: str) -> None:
     st.write("---")
-    st.title("Board game recommendation")
+    st.title("Board game recommender")
     st.write("""
         Looking for a new board game to play?\n 
-        why not check what players like you recommend? Simply choose a game and see the recommendations.""")
+        Why not check what players like you recommend? Simply choose a game and see the recommendations.""")
     with st.expander("Further explanation"):
         st.write("""
         For each game, you can view it's page on BGG, explore gameplay videos on Youtube,\n
