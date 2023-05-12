@@ -5,8 +5,12 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="2c80d4d2-5d03-47be-bd4f-35e10ce8ae3a" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/ML_models/__init__.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/utils/basic_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/basic_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Keyword_analysis.ipynb" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Logistic Regression Model - Titanic.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/ML_models/Logistic Regression Model - Titanic.ipynb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.MD" beforeDir="false" afterPath="$PROJECT_DIR$/README.MD" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Sequential Model - Loan Repayablity Prediction.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/ML_models/Sequential Model - Loan Repayablity Prediction.ipynb" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -39,19 +43,20 @@
     "RunOnceActivity.OpenProjectViewOnStart": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "git-widget-placeholder": "main",
-    "last_opened_file_path": "C:/Users/idana/Documents/GithubRipos/Idans_portfolio/Python/internal/bgg_scrapper",
+    "last_opened_file_path": "C:/Users/idana/Documents/GithubRipos/Idans_portfolio/Python/ML_models",
     "settings.editor.selected.configurable": "preferences.keymap"
   }
 }]]></component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\ML_models" />
+      <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python" />
       <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\internal\bgg_scrapper" />
       <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\streamlit_projects" />
       <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\internal\gizbarut_reports" />
-      <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\internal\keyword_analysis" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.bgg_scrapper (1)">
+  <component name="RunManager" selected="Python.bgg_scrapper">
     <configuration name="bgg_import" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="Python" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -73,27 +78,6 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="bgg_scrapper (1)" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
-      <module name="Python" />
-      <option name="INTERPRETER_OPTIONS" value="" />
-      <option name="PARENT_ENVS" value="true" />
-      <envs>
-        <env name="PYTHONUNBUFFERED" value="1" />
-      </envs>
-      <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/internal/bgg_scrapper" />
-      <option name="IS_MODULE_SDK" value="true" />
-      <option name="ADD_CONTENT_ROOTS" value="true" />
-      <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/internal/bgg_scrapper/bgg_scrapper.py" />
-      <option name="PARAMETERS" value="" />
-      <option name="SHOW_COMMAND_LINE" value="false" />
-      <option name="EMULATE_TERMINAL" value="false" />
-      <option name="MODULE_MODE" value="false" />
-      <option name="REDIRECT_INPUT" value="false" />
-      <option name="INPUT_FILE" value="" />
-      <method v="2" />
-    </configuration>
     <configuration name="bgg_scrapper" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="Python" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -107,6 +91,27 @@
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <option name="SCRIPT_NAME" value="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\internal\bgg_scrapper\bgg_scrapper.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="bgg_scrapper" type="PythonConfigurationType" factoryName="Python" temporary="true">
+      <module name="Python" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/bgg_scrapper" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/bgg_scrapper/bgg_scrapper.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -159,7 +164,7 @@
     </configuration>
     <recent_temporary>
       <list>
-        <item itemvalue="Python.bgg_scrapper (1)" />
+        <item itemvalue="Python.bgg_scrapper" />
         <item itemvalue="Python.bgg_import" />
         <item itemvalue="Python.settings" />
         <item itemvalue="Python.bgg_scrapper" />
@@ -213,24 +218,9 @@
           <option name="timeStamp" value="14" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/internal/bgg_scrapper/bgg_scrapper.py</url>
-          <line>106</line>
-          <option name="timeStamp" value="30" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/internal/bgg_scrapper/bgg_scrapper.py</url>
-          <line>105</line>
-          <option name="timeStamp" value="31" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/internal/bgg_scrapper/bgg_scrapper.py</url>
-          <line>83</line>
-          <option name="timeStamp" value="34" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/internal/bgg_scrapper/bgg_scrapper.py</url>
-          <line>101</line>
-          <option name="timeStamp" value="35" />
+          <url>file://$PROJECT_DIR$/bgg_scrapper/bgg_scrapper.py</url>
+          <line>140</line>
+          <option name="timeStamp" value="50" />
         </line-breakpoint>
       </breakpoints>
       <default-breakpoints>
@@ -241,10 +231,5 @@
         </breakpoint>
       </default-breakpoints>
     </breakpoint-manager>
-    <watches-manager>
-      <configuration name="PythonConfigurationType">
-        <watch expression="summary_df" />
-      </configuration>
-    </watches-manager>
   </component>
 </project>
