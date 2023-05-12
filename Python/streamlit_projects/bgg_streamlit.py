@@ -139,17 +139,14 @@ def create_model_explanation(source_code: str, notebook: str) -> None:
     st.title("Board game recommendation")
     st.write("""
         Looking for a new board game to play?\n 
-        why not check what players like you recommend?\n
-        Simply choose a game and see the recommendations.\n
-        For each game, you can view it's page on BGG,\n
-        explore gameplay videos on Youtube,\n
+        why not check what players like you recommend? Simply choose a game and see the recommendations.\n
+        For each game, you can view it's page on BGG, explore gameplay videos on Youtube,\n
         and if it has caught your eye, there's also a link to an amazon search page.\n
-        Additionally, you can filter the recommendations\n
-        by publisher, designer, game length, player count,\n
+        Additionally, you can filter the recommendations by publisher, designer, game length, player count,\n
         and navigate between recommendations.\n
         To make the experience more smooth, this is limited to the top 500 ranked games.
         """)
-    st.markdown(f"Interested in the [Underlying Code]?({source_code})")
+    st.markdown(f"Interested in the [Underlying Code]({source_code})?")
     st.markdown(f"EDA of the dataset can be found at this [Kaggle Notebook]({notebook})")
 
 
