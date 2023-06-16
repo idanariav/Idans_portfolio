@@ -24,6 +24,13 @@ Using a neural network, we attempt to predict which clients will probably not pa
 This projects starts from EDA, data cleaning and computing missing data. Then we create a sequential model to predict the repayment odds and compare the results vs our known labels
 using a confusion matrix. [Link](https://github.com/idanariav/Idans_portfolio/blob/main/Python/ML_models/Sequential%20Model%20-%20Loan%20Repayablity%20Prediction.ipynb)
 
+##### Linear regression + random forest
+
+Using board game info from board Game Geek website (like IMDB but for board games),we predict game ratings based on features avilable for new games such as mechanics used in the game, publisher, designer, etc.
+As with all external datasets, this required quite a lot of cleaning
+and feature engineering, which are essential to the model's quality.
+Using linear regression and a random forest model, we achieve a relativly good accuracy. [Link](https://github.com/idanariav/Idans_portfolio/blob/main/Python/ML_models/board-game-predictions.ipynb)
+
 ### NLP
 
 #### Sentiment analysis
