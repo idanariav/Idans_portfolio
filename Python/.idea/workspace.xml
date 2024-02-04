@@ -5,7 +5,23 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="2c80d4d2-5d03-47be-bd4f-35e10ce8ae3a" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/../.devcontainer/devcontainer.json" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/AI_models/ATS_AI/ATS_app.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/AI_models/ATS_AI/requirements.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/AI_models/ATS_AI/streamlit_utils.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/AI_models/ATS_AI/style/style.css" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/AI_models/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/nlp/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/../.gitignore" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/Python.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/Python.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/streamlit_projects/bgg_streamlit.py" beforeDir="false" afterPath="$PROJECT_DIR$/streamlit_projects/bgg_streamlit.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/streamlit_projects/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/streamlit_projects/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/streamlit_projects/streamlit_recommender/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/AI_models/ATS_AI/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/streamlit_projects/streamlit_recommender/sample_games_info.feather" beforeDir="false" afterPath="$PROJECT_DIR$/streamlit_projects/input_data/sample_games_info.feather" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/streamlit_projects/streamlit_recommender/sample_reviews.feather" beforeDir="false" afterPath="$PROJECT_DIR$/streamlit_projects/input_data/sample_reviews.feather" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/streamlit_projects/streamlit_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/streamlit_projects/streamlit_utils.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -25,8 +41,13 @@
   <component name="MarkdownSettingsMigration">
     <option name="stateVersion" value="1" />
   </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 6
+}</component>
   <component name="ProjectId" id="2GaYDpy5K0E2WlNYHP9OSNqp7Lt" />
-  <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
+  <component name="ProjectLevelVcsManager" settingsEditedManually="true">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
@@ -35,36 +56,42 @@
   &quot;keyToString&quot;: {
     &quot;ASKED_ADD_EXTERNAL_FILES&quot;: &quot;true&quot;,
     &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;Python.ATS_app.executor&quot;: &quot;Debug&quot;,
+    &quot;Python.monthly_email_events_processing.executor&quot;: &quot;Run&quot;,
     &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
     &quot;git-widget-placeholder&quot;: &quot;main&quot;,
-    &quot;last_opened_file_path&quot;: &quot;C:/Users/idana/Documents/GithubRipos/Idans_portfolio/Python/ML_models&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.keymap&quot;
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/idana/Documents/GithubRipos/Idans_portfolio/Python/streamlit_projects/ATS_AI&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;
   }
 }</component>
   <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\streamlit_projects\ATS_AI" />
+    </key>
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\" />
       <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\ML_models" />
-      <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python" />
-      <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\internal\bgg_scrapper" />
-      <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\streamlit_projects" />
-      <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\internal\gizbarut_reports" />
+      <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\ml_models" />
+      <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\bgg_recommender" />
+      <recent name="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\AI_models" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.monthly_email_events_processing">
-    <configuration name="bgg_import" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+  <component name="RunManager" selected="Python.ATS_app">
+    <configuration name="ATS_app" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="Python" />
+      <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
       <option name="PARENT_ENVS" value="true" />
       <envs>
         <env name="PYTHONUNBUFFERED" value="1" />
       </envs>
       <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/internal/bgg_scrapper/bgg_scrapper" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/AI_Projects" />
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/internal/bgg_scrapper/bgg_scrapper/bgg_import.py" />
+      <option name="SCRIPT_NAME" value="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\AI_Projects\ATS_AI\ATS_app.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -75,6 +102,7 @@
     </configuration>
     <configuration name="bgg_scrapper" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="Python" />
+      <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
       <option name="PARENT_ENVS" value="true" />
       <envs>
@@ -117,6 +145,7 @@
     </configuration>
     <configuration name="bgg_streamlit" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="Python" />
+      <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
       <option name="PARENT_ENVS" value="true" />
       <envs>
@@ -127,7 +156,7 @@
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/streamlit_projects/bgg_streamlit.py" />
+      <option name="SCRIPT_NAME" value="C:\Users\idana\Documents\GithubRipos\Idans_portfolio\Python\streamlit_projects\BGG_recommender\bgg_streamlit.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -138,6 +167,7 @@
     </configuration>
     <configuration name="event_table_process" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="Python" />
+      <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
       <option name="PARENT_ENVS" value="true" />
       <envs>
@@ -159,6 +189,7 @@
     </configuration>
     <configuration name="monthly_email_events_processing" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="Python" />
+      <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
       <option name="PARENT_ENVS" value="true" />
       <envs>
@@ -180,13 +211,20 @@
     </configuration>
     <recent_temporary>
       <list>
+        <item itemvalue="Python.ATS_app" />
         <item itemvalue="Python.monthly_email_events_processing" />
         <item itemvalue="Python.event_table_process" />
         <item itemvalue="Python.bgg_streamlit" />
         <item itemvalue="Python.bgg_scrapper" />
-        <item itemvalue="Python.bgg_import" />
       </list>
     </recent_temporary>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-python-sdk-5a2391486177-d3b881c8e49f-com.jetbrains.pycharm.community.sharedIndexes.bundled-PC-233.13763.11" />
+      </set>
+    </attachedChunks>
   </component>
   <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="application-level" UseSingleDictionary="true" transferred="true" />
   <component name="TaskManager">
@@ -225,13 +263,8 @@
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/internal/gizbarut_reports/monthly_email_events_processing.py</url>
-          <line>105</line>
+          <line>104</line>
           <option name="timeStamp" value="13" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/streamlit_projects/bgg_streamlit.py</url>
-          <line>203</line>
-          <option name="timeStamp" value="14" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/bgg_scrapper/bgg_scrapper.py</url>
@@ -239,14 +272,9 @@
           <option name="timeStamp" value="50" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/internal/gizbarut_reports/event_table_process.py</url>
-          <line>157</line>
-          <option name="timeStamp" value="52" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/internal/gizbarut_reports/event_table_process.py</url>
-          <line>158</line>
-          <option name="timeStamp" value="53" />
+          <url>file://$PROJECT_DIR$/internal/gizbarut_reports/monthly_email_events_processing.py</url>
+          <line>57</line>
+          <option name="timeStamp" value="51" />
         </line-breakpoint>
       </breakpoints>
       <default-breakpoints>

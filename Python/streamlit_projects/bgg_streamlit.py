@@ -8,7 +8,7 @@ from streamlit_utils import config_page, create_about_me_section, SessionNavigat
 
 # constants
 
-INPUTS_FOLDER = os.path.join(DIR_PATH, "streamlit_recommender")
+INPUTS_FOLDER = os.path.join(DIR_PATH, "input_data")
 GAMES_INFO_FILENAME = "sample_games_info.feather"
 REVIEWS_FILENAME = "sample_reviews.feather"
 LIST_LOCATOR = re.compile(r"\[(.*)\]")
@@ -199,46 +199,42 @@ def create_recommendation_zone(attributes_dict: dict, filters_dict: dict, game_n
                                           game_name_search=game_name_search)
 
 
-def main():
-    # general set up
-    config_page()
-    recommendation_navigation = SessionNavigation(button_key='recommendation_number')
-    games_found = False
-    # about me section
-    create_about_me_section()
+# streamlit up
+# general set up
+config_page()
+recommendation_navigation = SessionNavigation(button_key='recommendation_number')
+games_found = False
+# about me section
+create_about_me_section()
 
-    # model explanation
+# model explanation
+with st.container():
+    create_model_explanation(source_code=SOURCE_CODE, notebook=KAGGLE_NOTEBOOK)
+load = st.checkbox(label='Load Data (tick this box to initiate the model)', key="load_data")
+
+if load:
+    games_info, games_matrix = load_data()
+    attributes_dict = load_game_attributes(games_info=games_info)
+
+    # game selector
+    game_names, game_names_dict = get_games_names(games_info=games_info)
     with st.container():
-        create_model_explanation(source_code=SOURCE_CODE, notebook=KAGGLE_NOTEBOOK)
-    load = st.checkbox(label='Load Data (tick this box to initiate the model)', key="load_data")
+        st.write("---")
+        st.subheader("Which game do you like?")
+        game_name = st.selectbox(label="choose a game", options=game_names, label_visibility="hidden",
+                                 key="game_selector", on_change=recommendation_navigation.back_to_first)
 
-    if load:
-        games_info, games_matrix = load_data()
-        attributes_dict = load_game_attributes(games_info=games_info)
+    # optional filters
+    with st.container():
+        filters_dict = create_optional_filters(attributes_dict)
 
-        # game selector
-        game_names, game_names_dict = get_games_names(games_info=games_info)
-        with st.container():
-            st.write("---")
-            st.subheader("Which game do you like?")
-            game_name = st.selectbox(label="choose a game", options=game_names, label_visibility="hidden",
-                                     key="game_selector", on_change=recommendation_navigation.back_to_first)
+    # create recommendations
+    create_recommendation_zone(attributes_dict=attributes_dict,
+                               filters_dict=filters_dict,
+                               game_name=game_name, game_names_dict=game_names_dict,
+                               games_found=games_found, games_info=games_info,
+                               games_matrix=games_matrix,
+                               recommendation_navigation=recommendation_navigation)
 
-        # optional filters
-        with st.container():
-            filters_dict = create_optional_filters(attributes_dict)
-
-        # create recommendations
-        create_recommendation_zone(attributes_dict=attributes_dict,
-                                   filters_dict=filters_dict,
-                                   game_name=game_name, game_names_dict=game_names_dict,
-                                   games_found=games_found, games_info=games_info,
-                                   games_matrix=games_matrix,
-                                   recommendation_navigation=recommendation_navigation)
-
-        with st.container():
-            create_contact_form()
-
-
-if __name__ == '__main__':
-    main()
+    with st.container():
+        create_contact_form()

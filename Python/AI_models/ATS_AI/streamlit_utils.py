@@ -5,7 +5,7 @@ import os
 
 DIR_PATH = os.path.dirname(__file__)
 CSS_PATH = os.path.join(DIR_PATH, "style", "style.css")
-ANIMATION_URL = "https://assets3.lottiefiles.com/private_files/lf30_ajzyv37m.json"
+ANIMATION_URL = "https://lottie.host/413c3872-78b4-4006-9b87-0e4323ece205/gs3RezDVz9.json"
 PORTFOLIO_URL = "https://github.com/idanariav/Idans_portfolio/tree/main/Python"
 LINKEDIN_URL = "https://www.linkedin.com/in/idan-ariav/"
 
@@ -70,22 +70,6 @@ def prepare_navigation_section(col_number=12):
 
 
 def config_page():
-    st.set_page_config(page_title="BGG Recommender", page_icon=":tada:", layout="wide")
+    st.set_page_config(page_title="ATS system", page_icon=":tada:", layout="wide")
     local_css(file_path=CSS_PATH)
 
-
-class SessionNavigation(object):
-    def __init__(self, button_key):
-        self.button_key = button_key
-        if button_key not in st.session_state:
-            st.session_state[button_key] = 0
-
-    def back_to_first(self):
-        st.session_state[self.button_key] = 0
-
-    def next_result(self):
-        st.session_state[self.button_key] += 1
-
-    def prev_result(self):
-        if st.session_state[self.button_key] > 0:
-            st.session_state[self.button_key] -= 1
