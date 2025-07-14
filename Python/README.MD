@@ -10,6 +10,15 @@ For simplicity, they are also included on this project list.
 
 ### ML Models
 
+#### Unsupervised Learning
+
+##### K means clustering
+
+This project applies unsupervised machine learning techniques to a real-world e-commerce dataset to uncover meaningful customer segments based on their purchasing behavior.
+Using methods like K-Means, the analysis identifies distinct customer profiles based on features such as recency, frequency, and purchase distributions.
+Ideal for marketing teams, product managers, or data-driven decision-makers looking to personalize campaigns and better understand their customer base.
+[Link](https://github.com/idanariav/Idans_portfolio/blob/main/Python/ML_models/customer-segmentation-project.ipynb)
+
 #### Supervised Learning
 
 ##### Logistic regression
