@@ -4,6 +4,8 @@ import json
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
+from research_extractor_api_utils import fetch_web_content
+
 from research_extractor_prompts import (
     get_classify_source_prompt,
     get_extract_identifier_prompt,
@@ -18,7 +20,7 @@ client = OpenAI(
 )
 
 SEMANTIC_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
-TAVILY_URL = "https://api.tavily.com/search"
+
 MODEL = "google/gemini-2.5-flash"
 FIELDS = "title,authors,year,abstract,url,tldr"
 FOLDER_MAP = {
@@ -42,8 +44,20 @@ def call_llm(prompt, json_format=False):
 
 
 def parse_references(text):
-    references = [r.strip() for r in re.split(r"\s*\n", text) if r.strip()]
-    return references
+    """Parse references using multiple strategies.
+    
+    Strategy 1: Split by double newlines (paragraph breaks)
+    Strategy 2: Split by numbered list pattern (. 1. , . 10. , etc.) if strategy 1 yields <= 1 reference
+    """
+    # Strategy 1: Split by double newlines
+    refs = [r.strip() for r in re.split(r"\n\s*\n", text) if r.strip()]
+    
+    # If only one reference found, try numbered list pattern
+    if len(refs) <= 1:
+        # Strategy 2: Split by numbered list pattern (. 1. , . 10. , etc.)
+        refs = [r.strip() for r in re.split(r"\.\s+\d{1,2}\.\s+", text) if r.strip()]
+    
+    return refs
 
 
 def classify_source(reference):
@@ -52,11 +66,51 @@ def classify_source(reference):
     return json.loads(resp.choices[0].message.content)["source_type"]
 
 
+def is_valid_identifier(identifier_value):
+    """Check if identifier is meaningful and searchable."""
+    if not identifier_value:
+        return False
+    
+    # Too short to be meaningful
+    if len(identifier_value) < 5:
+        return False
+    
+    # Common meaningless patterns
+    meaningless_patterns = [
+        r'^Ibid',  # Ibidem reference
+        r'^\d{3,}[a-z]\d+–\d+$',  # Classical reference format (e.g., 1144a4–5)
+        r'^loc\.\s*cit',  # Loco citato
+        r'^id\.',  # Idem
+        r'^supra',  # Supra note
+        r'^infra',  # Infra note
+    ]
+    
+    for pattern in meaningless_patterns:
+        if re.search(pattern, identifier_value, re.IGNORECASE):
+            return False
+    
+    # Check if it's mostly punctuation/numbers without words
+    words = re.findall(r'[a-z]+', identifier_value, re.IGNORECASE)
+    if not words or len(''.join(words)) < 3:
+        return False
+    
+    return True
+
+
 def extract_identifier(source_type, reference):
     """Extract main identifier (DOI, CorpusID, ArXiv, or Title)."""
     prompt = get_extract_identifier_prompt(source_type, reference)
     resp = call_llm(prompt, json_format=True)
-    return json.loads(resp.choices[0].message.content)
+    identifier = json.loads(resp.choices[0].message.content)
+    
+    # For non-research papers, try to extract URL from reference
+    if source_type != "Research Paper":
+        url_pattern = r'https?://[^\s]+'
+        url_match = re.search(url_pattern, reference)
+        if url_match:
+            identifier["url"] = url_match.group(0)
+    
+    return identifier
 
 
 def fetch_research_paper(identifier_info):
@@ -98,36 +152,6 @@ def fetch_research_paper(identifier_info):
             "abstract": paper.get("abstract"),
             "tldr": paper.get("tldr"),
             "url": paper.get("url"),
-        }
-    except requests.RequestException as e:
-        print(f"API request failed: {e}")
-        return None
-
-
-def fetch_web_content(identifier_info):
-    """Fetch web content from Tavily API."""
-    query = identifier_info.get("identifier_value")
-    
-    try:
-        r = requests.post(
-            TAVILY_URL,
-            headers={"Authorization": f"Bearer {os.getenv('TAVILY_API_KEY')}"},
-            json={"query": query, "max_results": 1},
-            timeout=20,
-        )
-        r.raise_for_status()
-        results = r.json().get("results", [])
-        
-        if not results:
-            print(f"No results found for: {query}")
-            return None
-        
-        res = results[0]
-        return {
-            "title": res.get("title", "Untitled"),
-            "content": res.get("content") or res.get("snippet"),
-            "authors": [res.get("author")] if res.get("author") else ["Unknown"],
-            "url": res.get("url"),
         }
     except requests.RequestException as e:
         print(f"API request failed: {e}")
@@ -209,7 +233,14 @@ def main(input_file_path, origin="", output_dir=None):
             continue
         
         identifier_info = extract_identifier(source_type, ref)
-        print(f"Extracted {identifier_info['identifier_type']}: {identifier_info['identifier_value']}")
+        identifier_value = identifier_info.get("identifier_value", "")
+        
+        # Skip if identifier is not meaningful/searchable
+        if not is_valid_identifier(identifier_value):
+            print(f"Skipped (invalid identifier): {identifier_value}")
+            continue
+        
+        print(f"Extracted {identifier_info['identifier_type']}: {identifier_value}")
         
         # Fetch metadata
         meta = (fetch_research_paper(identifier_info) 
@@ -238,8 +269,8 @@ if __name__ == "__main__":
 """)
     
     main(
-        input_file_path="/Users/idanariav/Downloads/test_imports.txt",
-        origin="[[The art and science of connections (book)]]",
-        output_dir="/Users/idanariav/Downloads"
+        input_file_path="/Users/idanariav/Downloads/tecnhnical_inbox/a_significant_life.txt",
+        origin="[[A Significant Life (book)]]",
+        output_dir="/Users/idanariav/Downloads/tecnhnical_inbox"
     )
 
