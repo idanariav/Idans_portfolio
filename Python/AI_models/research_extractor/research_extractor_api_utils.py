@@ -1,12 +1,20 @@
+import os
+import re
+import json
 import trafilatura
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from urllib.parse import urlparse, parse_qs
+from research_extractor_constants import (
+    TAVILY_API_URL,
+    NYT_API_URL,
+    NYT_DOMAINS,
+    API_REQUEST_TIMEOUT,
+    NYT_API_TIMEOUT,
+)
 
 load_dotenv()
-TAVILY_URL = "https://api.tavily.com/search"
-NY_API_URL = "https://api.nytimes.com/svc/search/v2/articlesearch.json"
 
 def fetch_web_content(identifier_info):
     """Fetch article or lecture content via metadata-first strategy."""
@@ -50,10 +58,10 @@ def fetch_web_content(identifier_info):
     # 3. Tavily fallback
     try:
         r = requests.post(
-            TAVILY_URL,
+            TAVILY_API_URL,
             headers={"Authorization": f"Bearer {os.getenv('TAVILY_API_KEY')}"},
             json={"query": query, "max_results": 1},
-            timeout=20,
+            timeout=API_REQUEST_TIMEOUT,
         )
         r.raise_for_status()
         res = r.json()["results"][0]
@@ -66,7 +74,7 @@ def fetch_web_content(identifier_info):
     except Exception:
         return None
     
-def extract_article_metadata(url, nyt_api_key=os.getenv('TAVILY_API_KEY')):
+def extract_article_metadata(url, nyt_api_key=os.getenv('NYT_API_KEY')):
     """
     Extract article metadata using NYT API (if available) or HTML scraping as fallback.
     
@@ -94,13 +102,7 @@ def extract_article_metadata(url, nyt_api_key=os.getenv('TAVILY_API_KEY')):
 def is_nyt_url(url):
     """Check if URL is from New York Times."""
     parsed = urlparse(url)
-    nyt_domains = [
-        'nytimes.com',
-        'www.nytimes.com',
-        'query.nytimes.com',
-        'archive.nytimes.com'
-    ]
-    return any(domain in parsed.netloc for domain in nyt_domains)
+    return any(domain in parsed.netloc for domain in NYT_DOMAINS)
 
 
 def extract_from_nyt_api(url, api_key):
@@ -150,7 +152,7 @@ def search_nyt_by_url(url, api_key):
     }
     
     try:
-        response = requests.get(NY_API_URL, params=params, timeout=10)
+        response = requests.get(NYT_API_URL, params=params, timeout=NYT_API_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         
@@ -173,7 +175,7 @@ def search_nyt_by_id(article_id, api_key):
     }
     
     try:
-        response = requests.get(NY_API_URL, params=params, timeout=10)
+        response = requests.get(NYT_API_URL, params=params, timeout=NYT_API_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         
@@ -196,7 +198,7 @@ def search_nyt_by_keywords(keywords, api_key):
     }
     
     try:
-        response = requests.get(NY_API_URL, params=params, timeout=10)
+        response = requests.get(NYT_API_URL, params=params, timeout=NYT_API_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         

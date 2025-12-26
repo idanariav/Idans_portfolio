@@ -1,5 +1,60 @@
 """
-Prompts for the research extractor pipeline.
+Prompts for the research extractor pipeline and agent.
+"""
+
+# Agent System Prompt - Optimized for Gemini 3
+AGENT_SYSTEM_PROMPT = """<role>Metadata extraction specialist processing academic/web references and books into Obsidian markdown notes.</role>
+
+<constraints>
+- Skip invalid identifiers ("Ibid", too short, meaningless patterns)
+- Never retry failed fetches - skip immediately on timeout/error
+- Process complete batch before finishing
+- Provide brief status per reference
+</constraints>
+
+<tools>
+parse_references_file: Load references from text file
+classify_source_type: Identify as Research Paper|Article|Lecture|Post|Quote|Book
+extract_identifier: Get DOI|ArXiv|Title|URL
+validate_identifier: Check if meaningful/searchable
+fetch_paper_metadata: Semantic Scholar API (Research Papers only)
+fetch_web_content: Web scraping (Articles|Lectures|Posts|Quotes)
+prepare_content_for_note: Extract content string from metadata dict
+generate_note: Create structured summary with sections
+fetch_book_metadata: Google Books API (Books only)
+save_book_to_reading_list: Append book to reading list file (Books only)
+save_markdown: Export to categorized folder (non-Books)
+</tools>
+
+<workflow>
+1. Parse input file
+2. For each reference:
+   - Classify source type
+   - Extract identifier
+   - Validate → if invalid: SKIP with reason
+   
+   IF Book:
+   - Fetch book metadata (use fetch_book_metadata)
+   - If timeout/error: SKIP with reason
+   - Save to reading list (use save_book_to_reading_list with sanitized origin)
+   - Report status
+   
+   ELSE (Research Paper|Article|Lecture|Post|Quote):
+   - Fetch: use fetch_paper_metadata for Research Papers, fetch_web_content for others
+   - If timeout/error: SKIP with reason
+   - Prepare content: extract text from metadata
+   - Generate note
+   - Save markdown
+   - Report status
+   
+3. Output summary: total|success|skipped|failed with reasons
+</workflow>
+
+<skip_conditions>
+Invalid identifier|Fetch timeout (>30s)|API error|Missing metadata
+</skip_conditions>
+
+Begin when given: input_file, output_dir, origin.
 """
 
 
@@ -13,14 +68,17 @@ def get_classify_source_prompt(reference: str) -> str:
     Returns:
         Prompt string for the LLM
     """
-    return f"""
-Classify this reference as one of:
-Research Paper, Article, Book, Lecture, Post, Quote.
+    return f"""<task>Classify reference type</task>
 
-Return JSON {{ "source_type": "..." }}
+<categories>Research Paper|Article|Book|Lecture|Post|Quote</categories>
 
-Reference:
+<output_format>JSON with key "source_type"</output_format>
+
+<reference>
 {reference}
+</reference>
+
+Based on the reference above, return: {{"source_type": "..."}}
 """
 
 
@@ -36,30 +94,41 @@ def get_extract_identifier_prompt(source_type: str, reference: str) -> str:
         Prompt string for the LLM
     """
     if source_type == "Research Paper":
-        return f"""
-From this research paper reference, extract the MAIN identifier in this priority order:
-1. DOI (Digital Object Identifier) - looks like 10.xxxx/xxxxx
-2. CorpusID - a numeric ID from Semantic Scholar
-3. ArXiv ID - looks like arXiv:1234.5678 or similar
-4. If none of the above exist, extract the paper TITLE
+        return f"""<task>Extract primary identifier from research paper</task>
 
-Return JSON with:
-- "identifier_type": one of "DOI", "CorpusID", "ArXiv", or "Title"
-- "identifier_value": the actual value
+<priority_order>
+1. DOI (format: 10.xxxx/xxxxx)
+2. CorpusID (numeric Semantic Scholar ID)
+3. ArXiv ID (format: arXiv:1234.5678)
+4. Paper TITLE (if no DOI/CorpusID/ArXiv)
+</priority_order>
 
-Reference:
+<output_format>
+JSON with:
+- identifier_type: DOI|CorpusID|ArXiv|Title
+- identifier_value: extracted value
+</output_format>
+
+<reference>
 {reference}
+</reference>
+
+Based on the reference above, extract and return: {{"identifier_type": "...", "identifier_value": "..."}}
 """
     else:
-        return f"""
-From this reference, extract the main TITLE of the content.
+        return f"""<task>Extract title from reference</task>
 
-Return JSON with:
-- "identifier_type": "Title"
-- "identifier_value": the title of the content
+<output_format>
+JSON with:
+- identifier_type: "Title"
+- identifier_value: extracted title
+</output_format>
 
-Reference:
+<reference>
 {reference}
+</reference>
+
+Based on the reference above, return: {{"identifier_type": "Title", "identifier_value": "..."}}
 """
 
 
@@ -76,46 +145,28 @@ def get_generate_note_prompt(source_type: str, content: str) -> str:
     """
     # Customize sections based on source type
     if source_type == "Research Paper":
-        sections_instruction = """
-Sections to create:
-- Hypothesis
-- Methodology
-- Main Findings
-"""
-        content_focus = "This is a research paper."
+        sections = "Hypothesis|Methodology|Main Findings"
     elif source_type == "Article":
-        sections_instruction = """
-Sections to create:
-- Main Story
-- Credibility
-- Main Findings
-"""
-        content_focus = "This is a website article."
+        sections = "Main Story|Credibility|Main Findings"
     else:  # Lecture / Quote / Talk
-        sections_instruction = """
-Sections to create:
-- Main Story
-- Credibility
-- Main Findings
-"""
-        content_focus = "This is a lecture, quote, or talk."
+        sections = "Main Story|Credibility|Main Findings"
     
-    return f"""
-You are analyzing a {source_type}. {content_focus}
+    return f"""<task>Generate structured notes from {source_type}</task>
 
-Using ONLY the content below:
+<constraints>
+- Summary: ~50 words, focus on practical findings, clear language
+- Sections: {sections} (max 200 words each)
+- Topics: 1-3 broad topics as single nouns
+- Use ONLY the content provided below
+</constraints>
 
-1. Write a ~50 word summary focused on PRACTICAL FINDINGS. Use simple, clear language without jargon.
-2. Create structured sections.
+<output_format>
+JSON with keys: summary, topics (array), body_sections (object)
+</output_format>
 
-{sections_instruction}
-
-Each section <= 200 words.
-
-3. Suggest 1–3 broad topics as single nouns.
-
-Return JSON {{summary, topics, body_sections}}
-
-CONTENT:
+<content>
 {content}
+</content>
+
+Based on the content above, return: {{"summary": "...", "topics": [...], "body_sections": {{...}}}}
 """
