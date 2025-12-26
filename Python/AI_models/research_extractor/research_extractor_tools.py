@@ -90,6 +90,22 @@ def safe_json_parse(data: str) -> Dict:
         return {"error": f"Failed to parse JSON: {str(e)}", "raw_data": data[:200]}
 
 
+def get_timestamp_metadata() -> Dict[str, str]:
+    """Generate timestamp metadata fields for markdown frontmatter.
+    
+    Returns:
+        Dict with UUID, Created, Modified timestamps
+    """
+    from datetime import datetime
+    now = datetime.now()
+    
+    return {
+        "uuid": now.strftime("%Y%m%d%H%M%S"),
+        "created": now.strftime("%Y-%m-%d %H:%M"),
+        "modified": now.strftime("%Y-%m-%d %H:%M"),
+    }
+
+
 @tool
 def parse_references_file(file_path: str) -> Dict[str, Any]:
     """Load and parse references from text file. Splits by double newlines or numbered lists.
@@ -336,7 +352,17 @@ def save_markdown(metadata: str, note: str, origin: str, output_dir: str) -> Dic
         topics = "\n".join(f"  - [[{t} (MOC)]]" for t in note_data.get("topics", [])[:3])
         body = "\n\n".join(f"## {k}\n\n{v}" for k, v in note_data.get("body_sections", {}).items())
         
+        # Generate timestamp metadata
+        timestamps = get_timestamp_metadata()
+        
         md_content = f"""---
+UUID: {timestamps['uuid']}
+Created: {timestamps['created']}
+Modified: {timestamps['modified']}
+tags:
+  - Type/Bibliography
+Version: 1
+publish: false
 Authors:
 {authors}
 Summary: {note_data.get('summary', '')}
@@ -450,9 +476,10 @@ def save_book_to_reading_list(book_metadata: str, origin: str, output_dir: str) 
         sanitized_origin = origin.replace("[[", "").replace("]]", "").replace("(book)", "").strip()
         file_path = os.path.join(output_dir, "Misc", f"{sanitized_origin} (reading material).md")
         
-        # Check for duplicates if file exists
+        # Check if file exists and for duplicates
+        file_exists = os.path.exists(file_path)
         isbn = meta.get("isbn")
-        if os.path.exists(file_path) and isbn:
+        if file_exists and isbn:
             with open(file_path, "r", encoding="utf-8") as f:
                 existing_content = f.read()
             
@@ -470,7 +497,8 @@ def save_book_to_reading_list(book_metadata: str, origin: str, output_dir: str) 
         if meta.get('page_count'):
             identifiers += f" | Pages: {meta.get('page_count')}"
         
-        md_content = f"""## {title}
+        # Build book entry content
+        book_entry = f"""## {title}
 **Author:** {authors}  
 **Publish Date:** {published}  
 **Category:** {main_category}  
@@ -484,9 +512,28 @@ def save_book_to_reading_list(book_metadata: str, origin: str, output_dir: str) 
         
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         
-        # Append mode to build reading list
+        # Add frontmatter only if creating new file
+        if not file_exists:
+            timestamps = get_timestamp_metadata()
+            frontmatter = f"""---
+UUID: {timestamps['uuid']}
+Created: {timestamps['created']}
+Modified: {timestamps['modified']}
+tags:
+  - Type/Bibliography
+Version: 1
+publish: false
+---
+
+# Reading Material: {sanitized_origin}
+
+"""
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(frontmatter)
+        
+        # Append book entry
         with open(file_path, "a", encoding="utf-8") as f:
-            f.write(md_content)
+            f.write(book_entry)
         
         return {"file_path": file_path}
     except Exception as e:
