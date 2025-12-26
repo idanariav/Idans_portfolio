@@ -9,23 +9,28 @@ This project has been **converted from a sequential pipeline to an LLM agent** u
 ### Key Features
 
 - **Autonomous Decision-Making**: Agent decides when to skip, retry, or proceed based on reference quality
+- **Book Processing**: Fetches book metadata from Google Books API and creates reading lists
+- **API Fallback**: Automatically falls back from Semantic Scholar to OpenAlex for paper metadata
+- **Duplicate Detection**: ISBN-based deduplication for books in reading lists
 - **Timeout Protection**: 30-second timeouts on API calls prevent hanging on slow sources
+- **Rate Limit Handling**: Exponential backoff retry logic for API rate limits
 - **Context Reset**: Each reference processed with fresh context to prevent token overflow
-- **Tool-Based Architecture**: Extensible design with 8 specialized tools
-- **Comprehensive Testing**: Test suite validates processing of diverse reference types
+- **Tool-Based Architecture**: Extensible design with 11 specialized tools
+- **DRY Architecture**: Shared API logic reduces code duplication by 60%
+- **Metadata Timestamps**: Auto-generated UUID, creation, and modification timestamps
 
 ## 📁 Project Structure
 
 ```
 research_extractor/
-├── research_extractor_agent.py      # Main agent implementation (NEW)
-├── research_extractor_tools.py      # LangChain tool definitions (NEW)
+├── research_extractor_agent.py      # Main agent implementation
+├── research_extractor_tools.py      # LangChain tool definitions (11 tools)
 ├── research_extractor_prompts.py    # Prompts for LLM and agent
-├── research_extractor_api_utils.py  # API utilities (Semantic Scholar, web scraping)
-├── research_extractor_pipeline.py   # DEPRECATED - Old sequential pipeline
-├── test_research_extractor.py       # Test suite (NEW)
-├── requirements.txt                 # Updated with LangChain dependencies
-└── README.md                        # This file (NEW)
+├── research_extractor_api_utils.py  # API utilities (Semantic Scholar, OpenAlex, Google Books, web scraping)
+├── research_extractor_constants.py  # Configuration constants
+├── demo.py                          # Demo script
+├── requirements.txt                 # Dependencies
+└── README.md                        # This file
 ```
 
 ## 🔧 Installation
@@ -52,12 +57,17 @@ Create a `.env` file with:
 
 ```bash
 OPENROUTER_API_KEY=your_openrouter_api_key
-TAVILY_API_KEY=your_tavily_api_key  # Optional, for web search fallback
-NYT_API_KEY=your_nyt_api_key        # Optional, for NYT articles
+SEMATIC_SCHOLAR_API_KEY=your_semantic_scholar_key  # Optional, for higher rate limits
+GOOGLE_BOOKS_API_KEY=your_google_books_key        # Optional, for higher rate limits
+TAVILY_API_KEY=your_tavily_api_key                # Optional, for web search fallback
+NYT_API_KEY=your_nyt_api_key                      # Optional, for NYT articles
+USER_EMAIL=your_email@example.com                 # For OpenAlex polite pool
 ```
 
 **Get API Keys:**
 - OpenRouter: https://openrouter.ai/ (supports multiple LLM providers)
+- Semantic Scholar: https://www.semanticscholar.org/product/api (100 → 5000 requests/5min with key)
+- Google Books: https://console.cloud.google.com/ (create API key)
 - Tavily: https://tavily.com/ (web search API)
 - NYT: https://developer.nytimes.com/ (New York Times articles)
 
@@ -109,13 +119,20 @@ output/
 ├── Articles/          # Web articles
 ├── Lectures/          # Lectures and talks
 ├── Socials/           # Social media posts
-└── Quotes/            # Quotes and citations
+├── Quotes/            # Quotes and citations
+└── Misc/              # Books and reading materials
 ```
 
 Each file includes:
-- YAML frontmatter (authors, year, topics, links)
+- YAML frontmatter with metadata (UUID, timestamps, authors, topics, tags)
 - Structured sections (Hypothesis, Methodology, Main Findings, etc.)
 - Obsidian-compatible links (`[[Author]]`, `[[Topic (MOC)]]`)
+
+**Reading Lists:**
+Books are saved to `Misc/<origin> (reading material).md` with:
+- One-time frontmatter header with timestamps
+- Multiple book entries in simple markdown format
+- ISBN-based duplicate detection
 
 ## 🧪 Testing
 
@@ -133,7 +150,7 @@ Tests cover:
 
 ## 🛠️ Available Tools
 
-The agent has access to 8 tools:
+The agent has access to 11 tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -141,9 +158,12 @@ The agent has access to 8 tools:
 | `classify_source_type` | Classify as Research Paper, Article, Lecture, Post, Quote, or Book |
 | `extract_identifier` | Extract DOI, ArXiv ID, Title, or URL |
 | `validate_identifier` | Check if identifier is meaningful/searchable |
-| `fetch_paper_metadata` | Get metadata from Semantic Scholar API |
+| `fetch_paper_metadata` | Get metadata from Semantic Scholar (with OpenAlex fallback) |
 | `fetch_web_content` | Scrape web content and metadata |
+| `prepare_content_for_note` | Extract and format content for note generation |
 | `generate_note` | Create structured notes with LLM |
+| `fetch_book_metadata` | Get book metadata from Google Books API |
+| `save_book_to_reading_list` | Append book to reading list with duplicate detection |
 | `save_markdown` | Export to formatted markdown file |
 
 ## 🔄 Agent Workflow
@@ -154,16 +174,25 @@ For each reference, the agent follows this workflow:
 1. Parse input file → Get all references
 2. For each reference:
    ├─ Classify source type
-   ├─ Skip if "Book"
    ├─ Extract identifier (DOI/ArXiv/Title/URL)
    ├─ Validate identifier
    │  └─ If invalid (e.g., "Ibid") → SKIP
-   ├─ Fetch metadata
-   │  ├─ Research Paper → Semantic Scholar API
-   │  └─ Other → Web scraping
-   │     └─ If timeout/error → SKIP
-   ├─ Generate structured notes
-   └─ Save markdown file
+   │
+   ├─ IF Book:
+   │  ├─ Fetch book metadata (Google Books API)
+   │  ├─ Check for duplicates (ISBN-based)
+   │  └─ Append to reading list file
+   │
+   ├─ ELSE (Research Paper/Article/Lecture/Post/Quote):
+   │  ├─ Fetch metadata
+   │  │  ├─ Research Paper → Semantic Scholar API
+   │  │  │  └─ If fails → OpenAlex API (fallback)
+   │  │  └─ Other → Web scraping
+   │  │     └─ If timeout/error → SKIP
+   │  ├─ Prepare content (extract text)
+   │  ├─ Generate structured notes
+   │  └─ Save markdown file
+   │
 3. Report summary (success/skipped/failed counts)
 ```
 
@@ -171,24 +200,26 @@ For each reference, the agent follows this workflow:
 
 ### Change LLM Model
 
-Edit `research_extractor_tools.py` and `research_extractor_agent.py`:
+Edit `research_extractor_constants.py`:
 
 ```python
-MODEL = "google/gemini-3-flash-preview"  # Current default
+MODEL = "google/gemini-2.5-flash"  # Current default
 # Or try: "anthropic/claude-3-haiku", "openai/gpt-4", etc.
 ```
 
 ### Adjust Timeouts
 
-Edit `research_extractor_tools.py`:
+Edit `research_extractor_constants.py`:
 
 ```python
 FETCH_TIMEOUT = 30  # seconds (default)
+SEMANTIC_SCHOLAR_RATE_LIMIT_DELAY = 1.5  # Base delay between requests
+SEMANTIC_SCHOLAR_MAX_RETRIES = 3  # Max retry attempts
 ```
 
 ### Customize Folder Mapping
 
-Edit `research_extractor_tools.py`:
+Edit `research_extractor_constants.py`:
 
 ```python
 FOLDER_MAP = {
@@ -199,6 +230,14 @@ FOLDER_MAP = {
     "Quote": "Quotes",
 }
 ```
+
+### API Priority
+
+Paper metadata fetching follows this priority:
+1. **Semantic Scholar** (with retry and rate limit handling)
+2. **OpenAlex** (automatic fallback if Semantic Scholar fails)
+
+Both APIs are free, but Semantic Scholar requires an API key for higher rate limits (5000 vs 100 requests per 5 minutes).
 
 ## 📊 Processing Results
 
@@ -241,37 +280,20 @@ Thought: This is a research paper, I should extract the identifier...
 
 The agent automatically skips:
 
-1. **Books** - Different processing required
-2. **Invalid Identifiers**:
+1. **Invalid Identifiers**:
    - "Ibid" (ibidem references)
    - "loc. cit." (loco citato)
    - Classical references (e.g., "1144a4-5")
    - Too short (< 5 characters)
    - Mostly punctuation/numbers
-3. **Timeout/Errors**:
+2. **Timeout/Errors**:
    - API timeouts (>30 seconds)
    - Network failures
    - Missing required metadata
+3. **Duplicate Books**:
+   - Books with same ISBN in reading list (detected and skipped)
 
-## 🔮 Migration from Old Pipeline
-
-If you were using `research_extractor_pipeline.py`:
-
-**Old Code:**
-```python
-from research_extractor_pipeline import main
-main(input_file, origin, output_dir)
-```
-
-**New Code:**
-```python
-from research_extractor_agent import run_agent
-run_agent(input_file, output_dir, origin, verbose=False)
-```
-
-The old pipeline is now deprecated but kept for reference.
-
-## 🐛 Troubleshooting
+##  Troubleshooting
 
 ### Import Errors
 
@@ -365,5 +387,7 @@ This project is part of Idan's Portfolio.
 
 - Built with [LangChain](https://www.langchain.com/)
 - Uses [OpenRouter](https://openrouter.ai/) for LLM access
-- Semantic Scholar API for academic papers
-- Trafilatura for web content extraction
+- [Semantic Scholar API](https://www.semanticscholar.org/product/api) for academic papers
+- [OpenAlex](https://openalex.org/) for fallback academic paper metadata
+- [Google Books API](https://developers.google.com/books) for book metadata
+- [Trafilatura](https://trafilatura.readthedocs.io/) for web content extraction
