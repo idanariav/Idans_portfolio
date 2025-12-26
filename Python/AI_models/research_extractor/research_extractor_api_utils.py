@@ -341,6 +341,203 @@ def extract_from_html(url):
     except Exception as e:
         print(f"HTML extraction error: {e}")
         return None
+
+
+def make_api_request_with_retry(url, params=None, headers=None, timeout=30, max_retries=3, base_delay=1.5):
+    """Generic API request with exponential backoff retry logic.
     
+    Args:
+        url: API endpoint URL
+        params: Query parameters dict
+        headers: HTTP headers dict
+        timeout: Request timeout in seconds
+        max_retries: Maximum retry attempts
+        base_delay: Base delay for exponential backoff
+    
+    Returns:
+        Response JSON dict or None on failure
+    """
+    import time
+    
+    for attempt in range(max_retries):
+        try:
+            if attempt == 0 and base_delay > 0:
+                time.sleep(base_delay)
+            
+            r = requests.get(url, params=params, headers=headers, timeout=timeout)
+            
+            # Handle rate limit
+            if r.status_code == 429:
+                if attempt < max_retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+                    continue
+                return None
+            
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            if attempt == max_retries - 1:
+                return None
+    return None
 
 
+def normalize_paper_metadata(data, source, id_type=None):
+    """Normalize paper metadata from different API sources to common format.
+    
+    Args:
+        data: Raw API response
+        source: Source name ('semantic_scholar' or 'openalex')
+        id_type: Identifier type for Semantic Scholar (DOI, CorpusID, ArXiv, Title)
+    
+    Returns:
+        Normalized metadata dict or None
+    """
+    try:
+        if source == "semantic_scholar":
+            if data.get("error"):
+                return None
+            
+            paper = data if id_type in ["DOI", "CorpusID", "ArXiv"] else data.get("data", [None])[0]
+            if not paper:
+                return None
+            
+            return {
+                "title": paper.get("title"),
+                "authors": [a["name"] for a in paper.get("authors", [])],
+                "year": paper.get("year"),
+                "abstract": paper.get("abstract"),
+                "tldr": paper.get("tldr", {}).get("text") if paper.get("tldr") else None,
+                "url": paper.get("url"),
+                "source": "Semantic Scholar"
+            }
+        
+        elif source == "openalex":
+            work = data["results"][0] if "results" in data else data
+            if "results" in data and not data["results"]:
+                return None
+            
+            authors = [a["author"]["display_name"] for a in work.get("authorships", [])]
+            
+            # Reconstruct abstract from inverted index
+            abstract = None
+            inv_index = work.get("abstract_inverted_index")
+            if inv_index:
+                try:
+                    max_pos = max([max(positions) for positions in inv_index.values()])
+                    words = [""] * (max_pos + 1)
+                    for word, positions in inv_index.items():
+                        for pos in positions:
+                            words[pos] = word
+                    abstract = " ".join(words)
+                except Exception:
+                    abstract = None
+            
+            return {
+                "title": work.get("title"),
+                "authors": authors,
+                "year": work.get("publication_year"),
+                "abstract": abstract,
+                "tldr": None,
+                "url": work.get("doi") or work.get("id"),
+                "source": "OpenAlex"
+            }
+    except Exception:
+        return None
+
+
+def fetch_semantic_scholar_metadata(id_type, id_value):
+    """Fetch paper metadata from Semantic Scholar API."""
+    from research_extractor_constants import (
+        SEMANTIC_SCHOLAR_API_URL, SEMANTIC_SCHOLAR_FIELDS,
+        SEMANTIC_SCHOLAR_RATE_LIMIT_DELAY, SEMANTIC_SCHOLAR_MAX_RETRIES, FETCH_TIMEOUT
+    )
+    
+    # Build URL and params
+    if id_type in ["DOI", "CorpusID", "ArXiv"]:
+        paper_id = f"{id_type if id_type != 'ArXiv' else 'ARXIV'}:{id_value}"
+        url = f"{SEMANTIC_SCHOLAR_API_URL.replace('/search', '')}/{paper_id}"
+        params = {"fields": SEMANTIC_SCHOLAR_FIELDS}
+    else:
+        url = SEMANTIC_SCHOLAR_API_URL
+        params = {"query": id_value, "limit": 1, "fields": SEMANTIC_SCHOLAR_FIELDS}
+    
+    # Add API key if available
+    api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY")
+    headers = {"x-api-key": api_key} if api_key else {}
+    
+    # Make request with retry
+    data = make_api_request_with_retry(
+        url, params, headers,
+        timeout=FETCH_TIMEOUT,
+        max_retries=SEMANTIC_SCHOLAR_MAX_RETRIES,
+        base_delay=SEMANTIC_SCHOLAR_RATE_LIMIT_DELAY
+    )
+    
+    if not data:
+        return None
+    
+    # Normalize response
+    return normalize_paper_metadata(data, "semantic_scholar", id_type)
+
+
+def fetch_openalex_metadata(id_type, id_value):
+    """Fetch paper metadata from OpenAlex API."""
+    from research_extractor_constants import OPENALEX_API_URL, FETCH_TIMEOUT
+    
+    # Build URL
+    if id_type == "DOI":
+        url = f"{OPENALEX_API_URL}/doi:{id_value}"
+    else:
+        url = f"{OPENALEX_API_URL}?filter=title.search:{id_value}"
+    
+    # Add polite pool email
+    params = {"mailto": os.getenv("USER_EMAIL", "user@example.com")}
+    
+    # Make request (OpenAlex is more reliable, fewer retries needed)
+    data = make_api_request_with_retry(url, params, timeout=FETCH_TIMEOUT, max_retries=2, base_delay=0.5)
+    
+    if not data:
+        return {"error": "OpenAlex request failed"}
+    
+    # Normalize response
+    result = normalize_paper_metadata(data, "openalex")
+    return result if result else {"error": "No results from OpenAlex"}
+
+
+def fetch_google_books_metadata(book_title):
+    """Fetch book metadata from Google Books API."""
+    from research_extractor_constants import FETCH_TIMEOUT
+    
+    url = "https://www.googleapis.com/books/v1/volumes"
+    params = {"q": book_title, "maxResults": 1}
+    
+    # Add API key if available
+    api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
+    if api_key:
+        params["key"] = api_key.strip()
+    
+    # Make request (no retry needed for books)
+    data = make_api_request_with_retry(url, params, timeout=FETCH_TIMEOUT, max_retries=1, base_delay=0)
+    
+    if not data or "items" not in data or not data["items"]:
+        return {"error": "No books found"}
+    
+    book = data["items"][0]["volumeInfo"]
+    
+    # Extract ISBN (DRY: single loop for identifiers)
+    isbn = None
+    for identifier in book.get("industryIdentifiers", []):
+        if identifier["type"] in ["ISBN_13", "ISBN_10"]:
+            isbn = identifier["identifier"]
+            break
+    
+    return {
+        "title": book.get("title", ""),
+        "authors": book.get("authors", []),
+        "published_date": book.get("publishedDate", ""),
+        "description": book.get("description", ""),
+        "isbn": isbn,
+        "page_count": book.get("pageCount"),
+        "categories": book.get("categories", []),
+        "link": book.get("infoLink", ""),
+    }
