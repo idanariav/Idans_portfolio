@@ -28,6 +28,7 @@ from research_extractor_constants import (
     SEMANTIC_SCHOLAR_FIELDS,
     SEMANTIC_SCHOLAR_RATE_LIMIT_DELAY,
     SEMANTIC_SCHOLAR_MAX_RETRIES,
+    OPENALEX_API_URL,
     FOLDER_MAP,
     FETCH_TIMEOUT,
     OPENROUTER_API_BASE,
@@ -194,6 +195,7 @@ def validate_identifier(identifier_value: str) -> Dict[str, Any]:
 @tool
 def fetch_paper_metadata(identifier_info: str) -> Dict[str, Any]:
     """Fetch paper from Semantic Scholar by DOI|CorpusID|ArXiv|Title. 30s timeout.
+    Falls back to OpenAlex if Semantic Scholar fails or returns no results.
     Includes retry logic with exponential backoff for rate limits.
     
     Args: identifier_info - JSON with identifier_type and identifier_value
@@ -203,7 +205,8 @@ def fetch_paper_metadata(identifier_info: str) -> Dict[str, Any]:
         import time
         info = safe_json_parse(identifier_info)
         
-        def _fetch():
+        def _fetch_from_semantic_scholar():
+            """Try Semantic Scholar API first."""
             id_type = info.get("identifier_type")
             id_value = info.get("identifier_value")
             
@@ -234,17 +237,17 @@ def fetch_paper_metadata(identifier_info: str) -> Dict[str, Any]:
                         time.sleep(wait_time)
                         continue
                     else:
-                        return {"error": "Rate limit exceeded after retries"}
+                        return None  # Return None to trigger OpenAlex fallback
                 
                 r.raise_for_status()
                 data = r.json()
                 
                 if data.get("error"):
-                    return {"error": f"API error: {data['error']}"}
+                    return None  # Return None to trigger OpenAlex fallback
                 
                 paper = data if id_type in ["DOI", "CorpusID", "ArXiv"] else data.get("data", [None])[0]
                 if not paper:
-                    return {"error": f"No results: {id_type}={id_value}"}
+                    return None  # Return None to trigger OpenAlex fallback
                 
                 return {
                     "title": paper.get("title"),
@@ -252,10 +255,75 @@ def fetch_paper_metadata(identifier_info: str) -> Dict[str, Any]:
                     "year": paper.get("year"),
                     "abstract": paper.get("abstract"),
                     "tldr": paper.get("tldr", {}).get("text") if paper.get("tldr") else None,
-                    "url": paper.get("url")
+                    "url": paper.get("url"),
+                    "source": "Semantic Scholar"
                 }
             
-            return {"error": "Max retries exceeded"}
+            return None  # Return None to trigger OpenAlex fallback
+        
+        def _fetch_from_openalex():
+            """Fallback to OpenAlex API."""
+            id_type = info.get("identifier_type")
+            id_value = info.get("identifier_value")
+            
+            # Build OpenAlex URL
+            if id_type == "DOI":
+                url = f"{OPENALEX_API_URL}/doi:{id_value}"
+            elif id_type == "Title":
+                url = f"{OPENALEX_API_URL}?filter=title.search:{id_value}"
+            else:
+                # For other types, try title search
+                url = f"{OPENALEX_API_URL}?filter=title.search:{id_value}"
+            
+            # OpenAlex recommends polite pool with email
+            params = {"mailto": os.getenv("USER_EMAIL", "user@example.com")}
+            
+            r = requests.get(url, params=params, timeout=FETCH_TIMEOUT)
+            r.raise_for_status()
+            data = r.json()
+            
+            # Handle search results vs direct lookup
+            if "results" in data:
+                if not data["results"]:
+                    return {"error": "No results from OpenAlex"}
+                work = data["results"][0]
+            else:
+                work = data
+            
+            # Parse OpenAlex response format
+            authors = [authorship["author"]["display_name"] for authorship in work.get("authorships", [])]
+            
+            # Reconstruct abstract from inverted index if available
+            abstract = None
+            if work.get("abstract_inverted_index"):
+                inv_index = work["abstract_inverted_index"]
+                words = [""] * (max([max(positions) for positions in inv_index.values()]) + 1)
+                for word, positions in inv_index.items():
+                    for pos in positions:
+                        words[pos] = word
+                abstract = " ".join(words)
+            
+            return {
+                "title": work.get("title"),
+                "authors": authors,
+                "year": work.get("publication_year"),
+                "abstract": abstract,
+                "tldr": None,  # OpenAlex doesn't have TLDR
+                "url": work.get("doi") or work.get("id"),
+                "source": "OpenAlex"
+            }
+        
+        def _fetch():
+            # Try Semantic Scholar first
+            result = _fetch_from_semantic_scholar()
+            if result:
+                return result
+            
+            # Fallback to OpenAlex
+            try:
+                return _fetch_from_openalex()
+            except Exception as e:
+                return {"error": f"Both Semantic Scholar and OpenAlex failed: {str(e)}"}
         
         return with_timeout(_fetch, timeout=FETCH_TIMEOUT)()
     except Exception as e:

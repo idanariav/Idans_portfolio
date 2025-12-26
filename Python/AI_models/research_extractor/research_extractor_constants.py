@@ -12,6 +12,7 @@ MODEL = "google/gemini-2.5-flash"
 
 # API Endpoints
 SEMANTIC_SCHOLAR_API_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+OPENALEX_API_URL = "https://api.openalex.org/works"
 TAVILY_API_URL = "https://api.tavily.com/search"
 NYT_API_URL = "https://api.nytimes.com/svc/search/v2/articlesearch.json"
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
