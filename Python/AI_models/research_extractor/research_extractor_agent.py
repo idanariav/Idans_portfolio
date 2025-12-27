@@ -1,35 +1,49 @@
 """
-LangChain ReAct agent for research metadata extraction and markdown note generation.
+LangChain function-calling agent for research metadata extraction and markdown note generation.
 
-This agent processes batches of references, extracting metadata and generating
-structured markdown notes optimized for Obsidian. Each reference is processed
-with a fresh agent context to prevent context window issues.
+Optimized workflow reduces LLM calls by:
+1. Merging classification + extraction into single analyze_reference tool
+2. Inlining content preparation into fetch tools
+3. Using function calling instead of ReAct for reduced reasoning overhead
+
+Each reference is processed with a fresh agent context to prevent context window issues.
 """
 
 import os
 import re
+import traceback
 from typing import Dict, Any
 from dotenv import load_dotenv
 
 from langchain_openai import ChatOpenAI
-from langchain.agents import create_agent
+from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-from research_extractor_tools import TOOLS
+from research_extractor_tools import TOOLS, classify_reference_fast, process_reference_deterministic
 from research_extractor_prompts import AGENT_SYSTEM_PROMPT
-from research_extractor_constants import MODEL, OPENROUTER_API_BASE
+from research_extractor_constants import (
+    MODEL,
+    OPENROUTER_API_BASE,
+    HYBRID_MODE_ENABLED,
+    CONFIDENCE_THRESHOLD,
+    FAST_PATH_STATS,
+)
 
 load_dotenv()
 
 
 def create_agent_executor(verbose: bool = False):
     """
-    Create a LangChain agent with research extraction tools.
+    Create a LangChain function-calling agent with research extraction tools.
+    
+    Uses function calling instead of ReAct to reduce reasoning overhead and
+    improve execution speed.
     
     Args:
         verbose: If True, print agent reasoning and tool calls
     
     Returns:
-        Configured CompiledStateGraph (agent)
+        Configured AgentExecutor
     """
     # Initialize LLM with OpenRouter configuration
     llm = ChatOpenAI(
@@ -39,16 +53,26 @@ def create_agent_executor(verbose: bool = False):
         temperature=0.0,  # Deterministic for consistency
     )
     
-    # Create agent with new LangChain 1.x API
-    # Always set debug=False to avoid verbose internal state dumps
-    agent = create_agent(
-        model=llm,
+    # Create function-calling agent (more efficient than ReAct)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", AGENT_SYSTEM_PROMPT),
+        ("human", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ])
+    
+    agent = create_tool_calling_agent(llm, TOOLS, prompt)
+    
+    # Create agent executor with optimized settings
+    agent_executor = AgentExecutor(
+        agent=agent,
         tools=TOOLS,
-        system_prompt=AGENT_SYSTEM_PROMPT,
-        debug=False,
+        verbose=verbose,
+        handle_parsing_errors=True,
+        max_iterations=15,  # Prevent runaway execution
+        early_stopping_method="force",
     )
     
-    return agent
+    return agent_executor
 
 
 def process_single_reference(
@@ -60,7 +84,7 @@ def process_single_reference(
     verbose: bool = False
 ) -> Dict[str, Any]:
     """
-    Process a single reference with a fresh agent context.
+    Hybrid processing: deterministic for obvious cases, agent for ambiguous.
     
     Args:
         reference: The reference text to process
@@ -78,10 +102,42 @@ def process_single_reference(
     print(f"{'='*80}")
     print(f"Reference: {reference[:200]}..." if len(reference) > 200 else f"Reference: {reference}")
     
+    # Try fast path if hybrid mode enabled
+    if HYBRID_MODE_ENABLED:
+        fast_result = classify_reference_fast(reference)
+        
+        if fast_result["is_obvious"] and fast_result["confidence"] >= CONFIDENCE_THRESHOLD:
+            # FAST PATH: Deterministic processing
+            print(f"🚀 FAST PATH: {fast_result['reason']} (confidence: {fast_result['confidence']:.2f})")
+            print(f"   Type: {fast_result['source_type']}, ID: {fast_result['identifier_type']}")
+            
+            det_result = process_reference_deterministic(
+                reference, fast_result, origin, output_dir
+            )
+            
+            if det_result is not None:
+                # Fast path succeeded
+                print(f"✅ SUCCESS (deterministic): {reference_num}/{total_refs}")
+                det_result["path_used"] = "deterministic"
+                det_result["confidence"] = fast_result["confidence"]
+                det_result["reference"] = reference[:100]
+                return det_result
+            else:
+                # Fast path failed - fallback to agent
+                print(f"⚠️  Fast path failed, falling back to agent...")
+        else:
+            # Low confidence or ambiguous - use agent
+            print(f"🤖 AGENT PATH: {fast_result['reason']}")
+            if fast_result["confidence"] > 0:
+                print(f"   Confidence too low ({fast_result['confidence']:.2f})")
+    
+    # AGENT FALLBACK: Use agent for ambiguous cases or fast path failures
+    print("🤖 Using agent for full analysis...")
+    
     # Create fresh agent for this reference (context reset)
     agent = create_agent_executor(verbose=verbose)
     
-    # Prepare agent instruction
+    # Prepare agent instruction with optimized workflow
     instruction = f"""Process this single reference and save it as a markdown note:
 
 Reference: {reference}
@@ -89,121 +145,71 @@ Reference: {reference}
 Origin: {origin}
 Output Directory: {output_dir}
 
-Follow the workflow:
-1. Classify source type
-2. Extract identifier
-3. Validate identifier (skip if invalid)
-4. IF Book:
-   - Fetch book metadata (use fetch_book_metadata)
-   - Save to reading list (use save_book_to_reading_list with origin and output_dir)
-5. ELSE (Research Paper/Article/etc):
-   - Fetch metadata (use fetch_paper_metadata for Research Paper, fetch_web_content for others)
-   - Prepare content (use prepare_content_for_note to extract text from metadata)
-   - Generate note (use prepared content string)
+WORKFLOW:
+1. Analyze reference (use analyze_reference - returns source_type, identifier, AND validation in one call)
+2. IF not valid: SKIP with validation_reason
+3. IF Book:
+   - Fetch book metadata
+   - Save to reading list
+4. ELSE (Research Paper/Article/etc):
+   - Fetch metadata (fetch_paper_metadata for Research Paper, fetch_web_content for others)
+   - Generate note (use content_for_note field from metadata)
    - Save markdown
 
-Report the final status: SUCCESS, SKIPPED (with reason), or FAILED (with reason).
+IMPORTANT: You have full authority to determine if this reference should be skipped.
+Skip if: identifier is meaningless (Ibid, loc.cit, etc), too vague, or no actionable information.
+
+Report final status: SUCCESS, SKIPPED (reason), or FAILED (reason).
 """
     
     try:
-        # Track tool results for status determination
-        tool_results = {}
-        
-        def parse_tool_result(msg):
-            """Extract and store tool results from message."""
-            if not hasattr(msg, "content") or not msg.content:
-                return
-            
-            try:
-                import json
-                content_str = str(msg.content)
-                result = json.loads(content_str) if isinstance(content_str, str) else content_str
-                
-                if isinstance(result, dict):
-                    # Store specific fields we care about
-                    if "source_type" in result:
-                        tool_results["source_type"] = result["source_type"]
-                    if "is_valid" in result:
-                        tool_results["is_valid"] = result["is_valid"]
-                    if "file_path" in result:
-                        tool_results["file_saved"] = True
-            except:
-                pass
-        
+        # Execute agent with optimized function calling
         if verbose:
-            # Stream events for human-readable progress
-            print("\n🤖 Agent starting workflow...")
-            result = None
-            for event in agent.stream({"messages": [{"role": "user", "content": instruction}]}):
-                # Print tool calls in a clean format
-                if "model" in event:
-                    messages = event["model"].get("messages", [])
-                    for msg in messages:
-                        if hasattr(msg, "tool_calls") and msg.tool_calls:
-                            for tool_call in msg.tool_calls:
-                                tool_name = tool_call.get("name", "unknown")
-                                print(f"  🔧 Calling tool: {tool_name}")
-                
-                # Print tool results and capture key values
-                if "tools" in event:
-                    tool_messages = event["tools"].get("messages", [])
-                    for msg in tool_messages:
-                        if hasattr(msg, "content"):
-                            content_str = str(msg.content)
-                            print(f"  ✓ Tool result: {content_str[:150]}...")
-                            parse_tool_result(msg)
-                
-                # Keep the last event as result
-                result = event
+            print("\n🤖 Agent starting analysis...")
+        
+        result = agent.invoke({"input": instruction})
+        
+        # Extract output and determine status
+        output = result.get("output", "")
+        
+        # Check for success indicators in output
+        if "SUCCESS" in output.upper():
+            print(f"✅ SUCCESS (agent): {reference_num}/{total_refs}")
+            return {
+                "status": "success",
+                "reference": reference[:100],
+                "output": output,
+                "path_used": "agent",
+                "confidence": 0.0
+            }
+        elif "SKIP" in output.upper():
+            print(f"⏭️  SKIPPED (agent): {reference_num}/{total_refs}")
+            return {
+                "status": "skipped",
+                "reference": reference[:100],
+                "reason": output,
+                "path_used": "agent",
+                "confidence": 0.0
+            }
         else:
-            # Non-verbose mode - just invoke
-            result = agent.invoke({"messages": [{"role": "user", "content": instruction}]})
-            
-            # Extract tool results from message history
-            messages = result.get("messages", [])
-            for msg in messages:
-                parse_tool_result(msg)
-        
-        # Determine status from tool results only
-        source_type = tool_results.get("source_type")
-        is_valid = tool_results.get("is_valid")
-        file_saved = tool_results.get("file_saved", False)
-        
-        if verbose:
-            print(f"\n🔍 Debug - file_saved: {file_saved}, source_type: {source_type}, is_valid: {is_valid}")
-        
-        # Status determination based solely on tool results
-        if is_valid is False:
-            status = "skipped"
-            reason = "invalid identifier"
-        elif file_saved:
-            # save_markdown or save_book_to_reading_list was called successfully - this is success
-            status = "success"
-            reason = None
-        else:
-            # No file saved and not skipped - something went wrong
-            status = "failed"
-            reason = "workflow incomplete"
-        
-        # Print parsed status
-        status_emoji = "✅" if status == "success" else "⏭️" if status == "skipped" else "❌"
-        reason_text = f" - {reason}" if reason else ""
-        print(f"\n{status_emoji} Status: {status.upper()}{reason_text}")
-        
-        return {
-            "status": status,
-            "reason": reason,
-            "reference": reference[:100]
-        }
+            print(f"⚠️  UNCERTAIN (agent): {reference_num}/{total_refs}")
+            return {
+                "status": "uncertain",
+                "reference": reference[:100],
+                "output": output,
+                "path_used": "agent",
+                "confidence": 0.0
+            }
         
     except Exception as e:
-        import traceback
         print(f"❌ Error processing reference: {str(e)}")
         print(f"Traceback:\n{traceback.format_exc()}")
         return {
             "status": "failed",
             "reason": f"exception: {str(e)}",
-            "reference": reference[:100]
+            "reference": reference[:100],
+            "path_used": "agent",
+            "confidence": 0.0
         }
 
 
@@ -215,6 +221,9 @@ def run_agent(
 ) -> Dict[str, Any]:
     """
     Run the research extractor agent on a batch of references.
+    
+    Uses hybrid mode: fast deterministic path for obvious references,
+    agent fallback for ambiguous cases or failures.
     
     Processes all references from an input file, extracting metadata and
     generating structured markdown notes. Each reference is processed with
@@ -232,6 +241,8 @@ def run_agent(
         - success: Number of successfully saved notes
         - skipped: Number of skipped references
         - failed: Number of failed references
+        - fast_path: Number using deterministic path
+        - agent_path: Number using agent path
         - details: List of results for each reference
     
     Example:
@@ -244,7 +255,7 @@ def run_agent(
         >>> print(f"Success: {result['success']}/{result['total']}")
     """
     print(f"\n{'#'*80}")
-    print(f"# Research Extractor Agent")
+    print(f"# Research Extractor Agent (Hybrid Mode)")
     print(f"{'#'*80}")
     print(f"Input file: {input_file}")
     print(f"Output directory: {output_dir}")
@@ -271,7 +282,9 @@ def run_agent(
             "total": 0,
             "success": 0,
             "skipped": 0,
-            "failed": 0
+            "failed": 0,
+            "fast_path": 0,
+            "agent_path": 0
         }
     except Exception as e:
         return {
@@ -279,11 +292,24 @@ def run_agent(
             "total": 0,
             "success": 0,
             "skipped": 0,
-            "failed": 0
+            "failed": 0,
+            "fast_path": 0,
+            "agent_path": 0
         }
     
+    # Statistics tracking
+    stats = {
+        "total": total_refs,
+        "fast_path": 0,
+        "agent_path": 0,
+        "success": 0,
+        "skipped": 0,
+        "failed": 0,
+        "uncertain": 0,
+        "results": []
+    }
+    
     # Process each reference with fresh context
-    results = []
     for i, ref in enumerate(refs, 1):
         result = process_single_reference(
             reference=ref,
@@ -293,44 +319,64 @@ def run_agent(
             output_dir=output_dir,
             verbose=verbose
         )
-        results.append(result)
+        
+        # Track path usage
+        if result.get("path_used") == "deterministic":
+            stats["fast_path"] += 1
+        else:
+            stats["agent_path"] += 1
+        
+        # Track outcomes
+        status = result.get("status", "unknown")
+        if status == "success":
+            stats["success"] += 1
+        elif status == "skipped":
+            stats["skipped"] += 1
+        elif status == "uncertain":
+            stats["uncertain"] += 1
+        else:
+            stats["failed"] += 1
+        
+        stats["results"].append(result)
     
-    # Compile summary
-    success_count = sum(1 for r in results if r["status"] == "success")
-    skipped_count = sum(1 for r in results if r["status"] == "skipped")
-    failed_count = sum(1 for r in results if r["status"] == "failed")
-    
-    # Print summary
+    # Print final statistics
     print(f"\n{'='*80}")
     print(f"PROCESSING COMPLETE")
     print(f"{'='*80}")
-    print(f"Total references: {total_refs}")
-    print(f"✅ Successfully saved: {success_count}")
-    print(f"⏭️  Skipped: {skipped_count}")
-    print(f"❌ Failed: {failed_count}")
+    
+    if FAST_PATH_STATS:
+        print(f"\n📊 HYBRID MODE STATISTICS:")
+        print(f"  Fast Path (deterministic): {stats['fast_path']}/{stats['total']} " +
+              f"({stats['fast_path']/stats['total']*100:.1f}%)")
+        print(f"  Agent Path (LLM analysis): {stats['agent_path']}/{stats['total']} " +
+              f"({stats['agent_path']/stats['total']*100:.1f}%)")
+        print(f"\n📈 OUTCOME STATISTICS:")
+    else:
+        print(f"\n📈 STATISTICS:")
+    
+    print(f"  Total references: {stats['total']}")
+    print(f"  ✅ Success: {stats['success']}/{stats['total']} ({stats['success']/stats['total']*100:.1f}%)")
+    print(f"  ⏭️  Skipped: {stats['skipped']}/{stats['total']} ({stats['skipped']/stats['total']*100:.1f}%)")
+    print(f"  ❌ Failed: {stats['failed']}/{stats['total']} ({stats['failed']/stats['total']*100:.1f}%)")
+    if stats['uncertain'] > 0:
+        print(f"  ⚠️  Uncertain: {stats['uncertain']}/{stats['total']} ({stats['uncertain']/stats['total']*100:.1f}%)")
     
     # Print details of skipped/failed
-    if skipped_count > 0:
+    if stats['skipped'] > 0:
         print(f"\n📋 Skipped References:")
-        for r in results:
+        for r in stats['results']:
             if r["status"] == "skipped":
                 print(f"  - {r['reference']}... (Reason: {r.get('reason', 'unknown')})")
     
-    if failed_count > 0:
+    if stats['failed'] > 0:
         print(f"\n🚨 Failed References:")
-        for r in results:
+        for r in stats['results']:
             if r["status"] == "failed":
                 print(f"  - {r['reference']}... (Reason: {r.get('reason', 'unknown')})")
     
     print(f"{'='*80}\n")
     
-    return {
-        "total": total_refs,
-        "success": success_count,
-        "skipped": skipped_count,
-        "failed": failed_count,
-        "details": results
-    }
+    return stats
 
 
 if __name__ == "__main__":
@@ -348,3 +394,5 @@ if __name__ == "__main__":
               f"({result['success']/result['total']*100:.1f}%)")
     else:
         print(f"   No references found or processed")
+
+# TODO - add a fallback that if it failed to find the reference based on it's source type, try websearch to learn more about it

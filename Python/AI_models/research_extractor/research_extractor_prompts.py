@@ -2,7 +2,7 @@
 Prompts for the research extractor pipeline and agent.
 """
 
-# Agent System Prompt - Optimized for Gemini 3
+# Agent System Prompt - Optimized for Gemini with function calling
 AGENT_SYSTEM_PROMPT = """<role>Metadata extraction specialist processing academic/web references and books into Obsidian markdown notes.</role>
 
 <constraints>
@@ -14,41 +14,36 @@ AGENT_SYSTEM_PROMPT = """<role>Metadata extraction specialist processing academi
 
 <tools>
 parse_references_file: Load references from text file
-classify_source_type: Identify as Research Paper|Article|Lecture|Post|Quote|Book
-extract_identifier: Get DOI|ArXiv|Title|URL
-validate_identifier: Check if meaningful/searchable
-fetch_paper_metadata: Semantic Scholar API (Research Papers only)
-fetch_web_content: Web scraping (Articles|Lectures|Posts|Quotes)
-prepare_content_for_note: Extract content string from metadata dict
-generate_note: Create structured summary with sections
+analyze_reference: Classify source type AND extract identifier in ONE call (includes validation)
+fetch_paper_metadata: Semantic Scholar API (Research Papers only) - includes content_for_note
+fetch_web_content: Web scraping (Articles|Lectures|Posts|Quotes) - includes content_for_note
+generate_note: Create structured summary with sections (uses content_for_note from metadata)
 fetch_book_metadata: Google Books API (Books only)
 save_book_to_reading_list: Append book to reading list file (Books only)
 save_markdown: Export to categorized folder (non-Books)
 </tools>
 
-<workflow>
+<optimized_workflow>
 1. Parse input file
 2. For each reference:
-   - Classify source type
-   - Extract identifier
-   - Validate → if invalid: SKIP with reason
+   - Analyze reference (ONE tool call returns: source_type, identifier, validation)
+   - If invalid: SKIP with reason
    
    IF Book:
-   - Fetch book metadata (use fetch_book_metadata)
+   - Fetch book metadata
    - If timeout/error: SKIP with reason
-   - Save to reading list (use save_book_to_reading_list with sanitized origin)
+   - Save to reading list (use sanitized origin)
    - Report status
    
    ELSE (Research Paper|Article|Lecture|Post|Quote):
-   - Fetch: use fetch_paper_metadata for Research Papers, fetch_web_content for others
+   - Fetch metadata (returns data WITH content_for_note field)
    - If timeout/error: SKIP with reason
-   - Prepare content: extract text from metadata
-   - Generate note
+   - Generate note (use content_for_note from metadata)
    - Save markdown
    - Report status
    
 3. Output summary: total|success|skipped|failed with reasons
-</workflow>
+</optimized_workflow>
 
 <skip_conditions>
 Invalid identifier|Fetch timeout (>30s)|API error|Missing metadata
@@ -58,77 +53,104 @@ Begin when given: input_file, output_dir, origin.
 """
 
 
-def get_classify_source_prompt(reference: str) -> str:
+def get_analyze_reference_prompt(reference: str) -> str:
     """
-    Get prompt for classifying the source type of a reference.
+    Get prompt for analyzing a reference - classifies source type AND extracts identifier in one LLM call.
     
     Args:
-        reference: The reference string to classify
+        reference: The reference string to analyze
     
     Returns:
         Prompt string for the LLM
     """
-    return f"""<task>Classify reference type</task>
+    return f"""<task>Analyze reference: classify source type AND extract identifier for bibliographic resolution</task>
 
-<categories>Research Paper|Article|Book|Lecture|Post|Quote</categories>
+<context>
+References from books/bibliographies are inconsistently formatted.
+Infer classification and identifier from indirect signals, not strict formatting.
+</context>
 
-<output_format>JSON with key "source_type"</output_format>
+<classification_categories>
+Book: Standalone books/monographs
+  Signals: Publisher names, city+publisher, ISBN, "Press"/"Publishers"/"edition", no journal volume/issue
 
-<reference>
-{reference}
-</reference>
+Research Paper: Academic papers in journals/conferences
+  Signals: Journal/conference names, volume/issue/page ranges, DOI/CorpusID/arXiv/PubMed IDs, formal academic style
 
-Based on the reference above, return: {{"source_type": "..."}}
-"""
+Article: Journalistic or online articles
+  Signals: Newspaper/magazine names, URLs without DOIs, publication dates without volume/issue, essays/interviews
 
+Other: Sources not fitting above
+  Includes: Lectures/talks/speeches, blog posts, interviews, archival documents, classical texts
 
-def get_extract_identifier_prompt(source_type: str, reference: str) -> str:
-    """
-    Get prompt for extracting the main identifier from a reference.
-    
-    Args:
-        source_type: Type of source (Research Paper, Article, etc.)
-        reference: The full reference string
-    
-    Returns:
-        Prompt string for the LLM
-    """
-    if source_type == "Research Paper":
-        return f"""<task>Extract primary identifier from research paper</task>
+Invalid: References that do NOT meaningfully identify a source
+  Signals: "ibid.", "id.", "loc. cit.", "op. cit.", "supra note", page/section numbers only, fragmentary cross-references
+</classification_categories>
 
-<priority_order>
-1. DOI (format: 10.xxxx/xxxxx)
-2. CorpusID (numeric Semantic Scholar ID)
-3. ArXiv ID (format: arXiv:1234.5678)
-4. Paper TITLE (if no DOI/CorpusID/ArXiv)
-</priority_order>
+<identifier_extraction_rules>
+Must be explicitly present or directly inferable from reference text.
+Must be sufficient to locate source via search or APIs.
+Prefer stability and specificity over descriptiveness.
+
+Priority order (use first applicable):
+
+Research Papers:
+  1. DOI (format: 10.xxxx/xxxxx)
+  2. CorpusID (numeric Semantic Scholar ID)
+  3. arXiv ID (format: arXiv:1234.5678)
+  4. PubMed ID
+  5. Full paper title
+
+Articles:
+  1. URL
+  2. Canonical URL (if implied)
+  3. Full article title
+
+Books:
+  1. ISBN
+  2. Full book title + author (if ISBN missing)
+  3. Full book title
+
+Other:
+  1. URL
+  2. Title or descriptive name
+
+Invalid:
+  - Identifier must be null
+
+DO NOT: Invent identifiers, guess missing DOIs, normalize/rewrite identifiers, shorten titles
+</identifier_extraction_rules>
+
+<priority_rules>
+- Unresolved shorthand → Invalid, identifier null
+- DOI or equivalent present → Research Paper
+- URL without scholarly markers → Article
+- Uncertain classification → prefer Other over guessing
+</priority_rules>
+
+<validation>
+is_valid should be:
+- false: when source_type is "Invalid"
+- true: for all other valid source types
+validation_reason: brief explanation if invalid, empty string if valid
+</validation>
 
 <output_format>
-JSON with:
-- identifier_type: DOI|CorpusID|ArXiv|Title
-- identifier_value: extracted value
+JSON with keys:
+- source_type: Book|Research Paper|Article|Other|Invalid
+- identifier_type: DOI|CorpusID|arXiv|PubMed|URL|ISBN|Title|None
+- identifier_value: string or null
+- is_valid: boolean
+- validation_reason: string (empty if valid)
+- confidence: high|medium|low
+- rationale: brief explanation of classification signals used
 </output_format>
 
 <reference>
 {reference}
 </reference>
 
-Based on the reference above, extract and return: {{"identifier_type": "...", "identifier_value": "..."}}
-"""
-    else:
-        return f"""<task>Extract title from reference</task>
-
-<output_format>
-JSON with:
-- identifier_type: "Title"
-- identifier_value: extracted title
-</output_format>
-
-<reference>
-{reference}
-</reference>
-
-Based on the reference above, return: {{"identifier_type": "Title", "identifier_value": "..."}}
+Analyze the reference above and return: {{"source_type": "...", "identifier_type": "...", "identifier_value": "...", "is_valid": true/false, "validation_reason": "...", "confidence": "...", "rationale": "..."}}
 """
 
 
