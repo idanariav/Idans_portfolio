@@ -8,7 +8,6 @@ schemas and docstrings for the agent to understand when to use them.
 import os
 import re
 import json
-import ast
 from typing import Dict, Any
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -39,10 +38,16 @@ from research_extractor_constants import (
     PATTERN_ISBN,
     PATTERN_URL,
     PATTERN_CITATION,
+    PATTERN_AUTHOR_YEAR,
+    PATTERN_JOURNAL_INFO,
     PATTERN_INVALID_FILENAME_CHARS,
     PATTERN_INVALID_FILENAME_CHARS_ALT,
     ARTICLE_DOMAINS,
     VIDEO_DOMAINS,
+    NARRATIVE_STARTERS,
+    METHODOLOGY_MARKERS,
+    CROSS_REFERENCE_PATTERNS,
+    MIN_REFERENCE_LENGTH,
     DEFAULT_TITLE,
     DEFAULT_AUTHOR,
     DEFAULT_PUBLISHED_DATE,
@@ -51,6 +56,7 @@ from research_extractor_constants import (
     DEFAULT_URL_TEXT,
     DEFAULT_DESCRIPTION,
     DEFAULT_OUTPUT_FOLDER,
+    DEFAULT_CATEGORY,
     MARKDOWN_TAG_BIBLIOGRAPHY,
     FRONTMATTER_VERSION,
     FRONTMATTER_PUBLISH_DEFAULT,
@@ -84,39 +90,18 @@ def with_timeout(func, timeout: int = FETCH_TIMEOUT):
     return wrapper
 
 def safe_json_parse(data: str) -> Dict:
-    """Parse JSON string or return dict as-is. Handles malformed JSON gracefully."""
-    if not isinstance(data, str):
+    """Parse JSON string or return dict as-is."""
+    if isinstance(data, dict):
         return data
-    
     try:
         return json.loads(data)
-    except json.JSONDecodeError as e:
-        # Try to fix common JSON issues
-        try:
-            # Attempt 1: Replace literal backslashes with escaped backslashes
-            fixed = data.replace('\\', '\\\\')
-            return json.loads(fixed)
-        except:
-            pass
-        
-        try:
-            # Attempt 2: Use ast.literal_eval as fallback
-            return ast.literal_eval(data)
-        except:
-            pass
-        
-        # If all else fails, return error dict
-        return {"error": f"Failed to parse JSON: {str(e)}", "raw_data": data[:200]}
+    except (json.JSONDecodeError, ValueError):
+        return {"error": "Invalid JSON", "raw_data": data[:200]}
 
 
 def get_timestamp_metadata() -> Dict[str, str]:
-    """Generate timestamp metadata fields for markdown frontmatter.
-    
-    Returns:
-        Dict with UUID, Created, Modified timestamps
-    """
+    """Generate timestamp metadata fields."""
     now = datetime.now()
-    
     return {
         "uuid": now.strftime("%Y%m%d%H%M%S"),
         "created": now.strftime("%Y-%m-%d %H:%M"),
@@ -124,22 +109,278 @@ def get_timestamp_metadata() -> Dict[str, str]:
     }
 
 
+def _generate_filename(metadata: Dict) -> str:
+    """Generate standardized filename: 'Author - Title (reference)'."""
+    authors = metadata.get("authors", [DEFAULT_AUTHOR])
+    title = metadata.get("title", DEFAULT_TITLE)
+    
+    # Use first author, add "et al." if multiple authors
+    if len(authors) > 1:
+        author_str = f"{authors[0]} et al."
+    else:
+        author_str = authors[0] if authors else DEFAULT_AUTHOR
+    
+    # Remove invalid filename characters
+    author_clean = re.sub(PATTERN_INVALID_FILENAME_CHARS, "", author_str)
+    title_clean = re.sub(PATTERN_INVALID_FILENAME_CHARS, "", title)
+    
+    # Construct filename with truncation to avoid OS limits
+    filename = f"{author_clean} - {title_clean} (reference)"
+    return filename[:200]  # Keep reasonable length
+
+
+def _extract_origin_from_file(file_path: str) -> list:
+    """Extract existing Origin values from markdown file's YAML frontmatter."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        # Extract frontmatter
+        if not content.startswith("---"):
+            return []
+        
+        # Find end of frontmatter
+        end_idx = content.find("---", 3)
+        if end_idx == -1:
+            return []
+        
+        frontmatter = content[3:end_idx]
+        
+        # Parse Origin field (can be single line or multi-line list)
+        origins = []
+        in_origin_section = False
+        
+        for line in frontmatter.split("\n"):
+            if line.startswith("Origin:"):
+                in_origin_section = True
+                # Check if origin is on same line (old format)
+                value = line.split("Origin:", 1)[1].strip()
+                if value:
+                    origins.append(value)
+            elif in_origin_section:
+                # Check if this is a list item
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    origins.append(stripped[2:].strip())
+                elif not stripped or not stripped.startswith(" "):
+                    # End of Origin section
+                    break
+        
+        return origins
+    except Exception:
+        return []
+
+
+def _build_markdown_content(metadata: Dict, note: Dict, source_type: str, origin: Any) -> str:
+    """Shared markdown content builder."""
+    authors = "\n".join(f"  - [[{a}]]" for a in metadata.get("authors", [DEFAULT_AUTHOR]))
+    topics = "\n".join(f"  - [[{t} (MOC)]]" for t in note.get("topics", [])[:3])
+    body = "\n\n".join(f"## {k}\n\n{v}" for k, v in note.get("body_sections", {}).items())
+    timestamps = get_timestamp_metadata()
+    
+    # Handle origin as either string or list
+    if isinstance(origin, list):
+        origin_yaml = "\n".join(f"  - {o}" for o in origin)
+    else:
+        origin_yaml = f"  - {origin}"
+    
+    return f"""---
+UUID: {timestamps['uuid']}
+Created: {timestamps['created']}
+Modified: {timestamps['modified']}
+tags:
+  - {MARKDOWN_TAG_BIBLIOGRAPHY}
+Version: {FRONTMATTER_VERSION}
+publish: {str(FRONTMATTER_PUBLISH_DEFAULT).lower()}
+Authors:
+{authors}
+Summary: {note.get('summary', '')}
+Year: {metadata.get('year', DEFAULT_YEAR)}
+Topic:
+{topics}
+Link: {metadata.get('url', '')}
+Title: {metadata.get('title', DEFAULT_TITLE)}
+Source-Type: {source_type}
+Origin:
+{origin_yaml}
+---
+
+{body}
+"""
+
+
+def is_compound_reference(reference: str) -> tuple[bool, list[str]]:
+    """Detect if a reference entry contains multiple citations.
+    
+    Args:
+        reference: The reference text to check
+    
+    Returns:
+        (is_compound, [list of extracted citations]) tuple
+    """
+    # Find all author-year patterns
+    author_year_matches = list(re.finditer(PATTERN_AUTHOR_YEAR, reference))
+    
+    # Find all URLs
+    url_matches = list(re.finditer(PATTERN_URL, reference))
+    
+    # Check for multiple URLs (strong indicator of compound reference)
+    if len(url_matches) >= 2:
+        return (True, split_compound_reference(reference, author_year_matches or url_matches))
+    
+    # Check for multiple author-year patterns
+    if len(author_year_matches) < 2:
+        return (False, [])
+    
+    # Check if they look like separate complete citations
+    # (not just multiple mentions of same work)
+    has_journal_info = bool(re.search(PATTERN_JOURNAL_INFO, reference))
+    has_quotes = reference.count('"') >= 2  # Title in quotes
+    
+    # If we have 2+ author-year patterns AND journal info, likely compound
+    if has_journal_info or has_quotes:
+        return (True, split_compound_reference(reference, author_year_matches))
+    
+    return (False, [])
+
+
+def split_compound_reference(reference: str, author_year_matches: list) -> list[str]:
+    """Split a compound reference into individual citations using LLM.
+    
+    Args:
+        reference: The compound reference text
+        author_year_matches: List of regex match objects for author-year patterns
+    
+    Returns:
+        List of individual citation strings
+    """
+    try:
+        prompt = f"""<task>Split this compound reference into separate individual citations</task>
+
+<compound_reference>
+{reference}
+</compound_reference>
+
+<rules>
+- This entry contains {len(author_year_matches)} citations
+- Extract each complete citation (author, year, title, publication info)
+- Remove narrative text ("The first paper...", "The study shows...")
+- Each citation should be standalone and complete
+- Preserve all bibliographic details (journal, volume, pages)
+</rules>
+
+<output_format>
+JSON with key "citations" containing array of strings:
+{{
+  "citations": [
+    "Author1 (Year1). Title1. Journal1, Volume1, Pages1.",
+    "Author2 (Year2). Title2. Journal2, Volume2, Pages2.",
+    ...
+  ]
+}}
+</output_format>
+
+Extract and return JSON:"""
+        
+        resp = call_llm(prompt, json_format=True)
+        result = json.loads(resp.choices[0].message.content)
+        citations = result.get("citations", [])
+        
+        # Filter out empty or too-short results
+        citations = [c for c in citations if len(c.strip()) >= MIN_REFERENCE_LENGTH]
+        
+        return citations if citations else [reference]  # Fallback to original
+    
+    except Exception:
+        # On error, return original reference
+        return [reference]
+
+
+def is_non_citation(reference: str) -> tuple[bool, str]:
+    """Deterministically detect obvious non-citations to avoid wasting LLM calls.
+    
+    Args:
+        reference: The reference text to check
+    
+    Returns:
+        (is_invalid, reason) tuple
+    """
+    ref_lower = reference.lower()
+    
+    # Check 1: Too short
+    if len(reference.strip()) < MIN_REFERENCE_LENGTH:
+        return (True, "Too short (< 20 chars)")
+    
+    # Check 2: Cross-references (ibid, op. cit., etc.)
+    for pattern in CROSS_REFERENCE_PATTERNS:
+        if re.search(pattern, reference, re.IGNORECASE):
+            return (True, "Cross-reference only")
+    
+    # Check 3: Narrative/commentary text (but allow if contains embedded citation)
+    # A citation typically has a year in parentheses like (2009) or a URL
+    has_year_pattern = re.search(r'\(\d{4}\)', reference)
+    has_url = re.search(PATTERN_URL, reference)
+    
+    for pattern in NARRATIVE_STARTERS:
+        if re.search(pattern, reference, re.IGNORECASE):
+            # If narrative text but contains a year pattern or URL, it's likely introducing a citation
+            if not has_year_pattern and not has_url:
+                return (True, "Narrative text without citation")
+            # Otherwise let it pass - e.g., "For comprehensive overview, see Smith (2009)..."
+    
+    # Check 4: Study methodology descriptions
+    for pattern in METHODOLOGY_MARKERS:
+        if re.search(pattern, reference, re.IGNORECASE):
+            return (True, "Study description")
+    
+    return (False, "")
+
+
 @tool
 def parse_references_file(file_path: str) -> Dict[str, Any]:
     """Load and parse references from text file. Splits by double newlines or numbered lists.
+    Filters out obvious non-citations deterministically and splits compound references.
     
     Args: file_path - Absolute path to text file
-    Returns: {references: [list], count: int} or {error: str}
+    Returns: {references: [list], skipped: [{ref, reason}], split: [{original, count}], valid_count: int, skipped_count: int} or {error: str}
     """
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
         
-        refs = [r.strip() for r in re.split(PATTERN_DOUBLE_NEWLINE, text) if r.strip()]
-        if len(refs) <= 1:
-            refs = [r.strip() for r in re.split(PATTERN_NUMBERED_LIST, text) if r.strip()]
+        # Split by double newlines or numbered lists
+        raw_refs = [r.strip() for r in re.split(PATTERN_DOUBLE_NEWLINE, text) if r.strip()]
+        if len(raw_refs) <= 1:
+            raw_refs = [r.strip() for r in re.split(PATTERN_NUMBERED_LIST, text) if r.strip()]
         
-        return {"references": refs, "count": len(refs)}
+        # Filter out obvious non-citations and split compounds
+        valid_refs = []
+        skipped_refs = []
+        split_refs = []
+        
+        for ref in raw_refs:
+            # Check for non-citations first
+            is_invalid, reason = is_non_citation(ref)
+            if is_invalid:
+                skipped_refs.append({"reference": ref[:100], "reason": reason})
+                continue
+            
+            # Check for compound references
+            is_compound, citations = is_compound_reference(ref)
+            if is_compound and len(citations) > 1:
+                split_refs.append({"original": ref[:100], "count": len(citations)})
+                valid_refs.extend(citations)
+            else:
+                valid_refs.append(ref)
+        
+        return {
+            "references": valid_refs,
+            "skipped": skipped_refs,
+            "split": split_refs,
+            "valid_count": len(valid_refs),
+            "skipped_count": len(skipped_refs),
+            "split_count": len(split_refs)
+        }
     except FileNotFoundError:
         return {"error": f"File not found: {file_path}"}
     except Exception as e:
@@ -226,37 +467,6 @@ def fetch_web_content(identifier_info: str) -> Dict[str, Any]:
 
 
 @tool
-def prepare_content_for_note(metadata: str, source_type: str) -> Dict[str, str]:
-    """Extract and format content from metadata for note generation.
-    
-    Research Papers: combines tldr + abstract
-    Other types: extracts content field
-    
-    Args: metadata (JSON from fetch), source_type
-    Returns: {content: str} or {error: str}
-    """
-    try:
-        meta = safe_json_parse(metadata)
-        
-        if source_type == "Research Paper":
-            abstract = meta.get("abstract", "")
-            tldr = meta.get("tldr", "")
-            if tldr and abstract:
-                content = f"{tldr}\n\n{abstract}".strip()
-            else:
-                content = tldr or abstract or ""
-        else:
-            content = meta.get("content") or meta.get("abstract", "")
-        
-        if not content:
-            return {"error": "No content in metadata"}
-        
-        return {"content": content}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@tool
 def generate_note(source_type: str, content: str) -> Dict[str, Any]:
     """Generate structured note: summary, topics, body_sections.
     
@@ -279,56 +489,28 @@ def save_markdown(metadata: str, note: str, source_type: str, origin: str, outpu
     Returns: {file_path: str} or {error: str}
     """
     try:
-        # Handle both dict and JSON string inputs
-        if isinstance(metadata, dict):
-            meta = metadata
-        else:
-            meta = safe_json_parse(metadata)
+        meta = safe_json_parse(metadata) if not isinstance(metadata, dict) else metadata
+        note_data = safe_json_parse(note) if not isinstance(note, dict) else note
         
-        if isinstance(note, dict):
-            note_data = note
-        else:
-            note_data = safe_json_parse(note)
-        
-        # Check for parse errors
         if "error" in meta:
             return {"error": f"Failed to parse metadata: {meta.get('error')}"}
         if "error" in note_data:
             return {"error": f"Failed to parse note: {note_data.get('error')}"}
         
-        authors = "\n".join(f"  - [[{a}]]" for a in meta.get("authors", [DEFAULT_AUTHOR]))
-        topics = "\n".join(f"  - [[{t} (MOC)]]" for t in note_data.get("topics", [])[:3])
-        body = "\n\n".join(f"## {k}\n\n{v}" for k, v in note_data.get("body_sections", {}).items())
-        
-        # Generate timestamp metadata
-        timestamps = get_timestamp_metadata()
-        
-        md_content = f"""---
-UUID: {timestamps['uuid']}
-Created: {timestamps['created']}
-Modified: {timestamps['modified']}
-tags:
-  - {MARKDOWN_TAG_BIBLIOGRAPHY}
-Version: {FRONTMATTER_VERSION}
-publish: {str(FRONTMATTER_PUBLISH_DEFAULT).lower()}
-Authors:
-{authors}
-Summary: {note_data.get('summary', '')}
-Year: {meta.get('year', DEFAULT_YEAR)}
-Topic:
-{topics}
-Link: {meta.get('url', '')}
-Title: {meta.get('title', DEFAULT_TITLE)}
-Source-Type: {source_type}
-Origin: {origin}
----
-
-{body}
-"""
-        
         folder = FOLDER_MAP.get(source_type, DEFAULT_OUTPUT_FOLDER)
-        safe_title = re.sub(PATTERN_INVALID_FILENAME_CHARS, "", meta.get("title", DEFAULT_TITLE))
-        file_path = os.path.join(output_dir, folder, f"{safe_title}.md")
+        filename = _generate_filename(meta)
+        file_path = os.path.join(output_dir, folder, f"{filename}.md")
+        
+        # Check if file exists and merge origins
+        final_origin = origin
+        if os.path.exists(file_path):
+            existing_origins = _extract_origin_from_file(file_path)
+            if existing_origins:
+                # Merge origins, avoid duplicates
+                all_origins = existing_origins + [origin]
+                final_origin = list(dict.fromkeys(all_origins))  # Remove duplicates while preserving order
+        
+        md_content = _build_markdown_content(meta, note_data, source_type, final_origin)
         
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
@@ -347,6 +529,44 @@ def fetch_book_metadata(book_title: str) -> Dict[str, Any]:
     Returns: {title, authors, published_date, description, isbn, page_count, categories, link} or {error}
     """
     return fetch_google_books_metadata(book_title)
+
+
+def _extract_minimal_metadata(citation_text: str) -> Dict[str, Any]:
+    """Core logic for extracting basic metadata from citation text."""
+    prompt = f"""Extract bibliographic data from this citation:
+
+{citation_text}
+
+Extract: author names, year (4-digit), title, venue.
+Return JSON: {{"title": str, "authors": [str], "year": str, "publication_venue": str, "summary": str, "topics": [str], "body_sections": {{}}}}"""
+    
+    resp = call_llm(prompt, json_format=True)
+    result = json.loads(resp.choices[0].message.content)
+    
+    # Set defaults
+    result.setdefault("title", "Untitled Citation")
+    result.setdefault("authors", ["Unknown"])
+    result.setdefault("year", "Unknown")
+    result.setdefault("summary", "Unresolvable reference - no digital metadata available.")
+    result.setdefault("topics", ["Uncategorized"])
+    result.setdefault("body_sections", {"Citation": citation_text})
+    result["url"] = ""
+    result["content_for_note"] = citation_text
+    
+    return result
+
+
+@tool
+def create_minimal_note(citation_text: str, source_type: str) -> Dict[str, Any]:
+    """Extract basic bibliographic info from citation text when no API lookup is possible.
+    
+    Args: citation_text, source_type
+    Returns: {title, authors, year, summary, topics, body_sections} or {error}
+    """
+    try:
+        return _extract_minimal_metadata(citation_text)
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @tool
@@ -554,14 +774,31 @@ def classify_reference_fast(reference: str) -> Dict[str, Any]:
     standard_citation = re.search(PATTERN_CITATION, reference)
     if standard_citation and len(standard_citation.group(3)) > 20:
         title = standard_citation.group(3).split('.')[0].strip()
-        result.update({
-            "is_obvious": True,
-            "confidence": 0.75,
-            "source_type": "Research Paper",
-            "identifier_type": "Title",
-            "identifier_value": title,
-            "reason": "Standard academic citation format"
-        })
+        
+        # Check if it looks like a research paper (journal indicators)
+        has_volume = re.search(r'\d+,\s*\d+', reference)  # volume, page pattern
+        has_journal_indicators = re.search(r'\b(Journal|Proceedings|Conference|Bulletin|Review|Science)\b', reference, re.IGNORECASE)
+        
+        if has_volume or has_journal_indicators:
+            # Research paper - try title search
+            result.update({
+                "is_obvious": True,
+                "confidence": 0.75,
+                "source_type": "Research Paper",
+                "identifier_type": "Title",
+                "identifier_value": title,
+                "reason": "Academic citation with title - will try API search"
+            })
+        else:
+            # Newspaper, magazine, or other - try title search for articles
+            result.update({
+                "is_obvious": True,
+                "confidence": 0.70,
+                "source_type": "Article",
+                "identifier_type": "Title",
+                "identifier_value": title,
+                "reason": "Citation with title - will try search"
+            })
         return result
     
     # Ambiguous case - needs LLM
@@ -640,50 +877,34 @@ def generate_note_direct(source_type: str, content: str) -> Dict[str, Any]:
 def save_markdown_direct(metadata: Dict, note: Dict, source_type: str, origin: str, output_dir: str) -> Dict[str, str]:
     """Direct version of save_markdown without tool wrapper."""
     try:
-        # Use existing logic from save_markdown tool
-        authors = "\n".join(f"  - [[{a}]]" for a in metadata.get("authors", [DEFAULT_AUTHOR]))
-        topics = "\n".join(f"  - [[{t} (MOC)]]" for t in note.get("topics", [])[:3])
-        body = "\n\n".join(f"## {k}\n\n{v}" for k, v in note.get("body_sections", {}).items())
-        
-        timestamps = get_timestamp_metadata()
-        
-        md_content = f"""---
-UUID: {timestamps['uuid']}
-Created: {timestamps['created']}
-Modified: {timestamps['modified']}
-tags:
-  - {MARKDOWN_TAG_BIBLIOGRAPHY}
-Version: {FRONTMATTER_VERSION}
-publish: {str(FRONTMATTER_PUBLISH_DEFAULT).lower()}
-Authors:
-{authors}
-Topics:
-{topics}
-Origin: {origin}
----
-
-# {metadata.get('title', DEFAULT_TITLE)}
-
-**Summary**: {note.get('summary', DEFAULT_SUMMARY)}
-
-**Year**: {metadata.get('year', DEFAULT_YEAR)}
-
-**URL**: [{metadata.get('url', DEFAULT_URL_TEXT)}]({metadata.get('url', '')})
-
-{body}
-"""
-        
         folder = FOLDER_MAP.get(source_type, DEFAULT_OUTPUT_FOLDER)
-        folder_path = os.path.join(output_dir, folder)
-        os.makedirs(folder_path, exist_ok=True)
+        filename = _generate_filename(metadata)
+        file_path = os.path.join(output_dir, folder, f"{filename}.md")
         
-        safe_title = re.sub(PATTERN_INVALID_FILENAME_CHARS_ALT, '', metadata.get('title', DEFAULT_TITLE))[:100]
-        file_path = os.path.join(folder_path, f"{safe_title}.md")
+        # Check if file exists and merge origins
+        final_origin = origin
+        if os.path.exists(file_path):
+            existing_origins = _extract_origin_from_file(file_path)
+            if existing_origins:
+                # Merge origins, avoid duplicates
+                all_origins = existing_origins + [origin]
+                final_origin = list(dict.fromkeys(all_origins))  # Remove duplicates while preserving order
         
+        md_content = _build_markdown_content(metadata, note, source_type, final_origin)
+        
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(md_content)
         
         return {"file_path": file_path}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def create_minimal_note_direct(citation_text: str, source_type: str) -> Dict[str, Any]:
+    """Direct version of create_minimal_note without tool wrapper."""
+    try:
+        return _extract_minimal_metadata(citation_text)
     except Exception as e:
         return {"error": str(e)}
 
@@ -748,13 +969,33 @@ def process_reference_deterministic(
         # Step 1: Fetch metadata based on source type
         if source_type == "Research Paper":
             metadata = fetch_paper_metadata_direct(identifier_type, identifier_value)
+            
+            # If title search fails, fallback to minimal note
+            if metadata and "error" in metadata and identifier_type == "Title":
+                metadata = create_minimal_note_direct(reference, "Unresolvable")
+                source_type = "Unresolvable"
+        
+        elif source_type == "Article" and identifier_type == "Title":
+            # Try paper search first (some articles are in academic DBs)
+            metadata = fetch_paper_metadata_direct(identifier_type, identifier_value)
+            
+            # If not found, fallback to minimal note
+            if metadata and "error" in metadata:
+                metadata = create_minimal_note_direct(reference, "Unresolvable")
+                source_type = "Unresolvable"
+        
         elif source_type == "Book":
             metadata = fetch_book_metadata_direct(identifier_type, identifier_value)
+        
+        elif source_type == "Unresolvable":
+            # Extract basic info from citation text only
+            metadata = create_minimal_note_direct(reference, source_type)
+        
         else:
-            # Article, Lecture, or other web content
+            # Article, Lecture, or other web content with URL
             metadata = fetch_web_content_direct(identifier_value, url)
         
-        if "error" in metadata:
+        if "error" in metadata and source_type != "Unresolvable":
             return None
         
         # Step 2: Book handling path
@@ -769,7 +1010,26 @@ def process_reference_deterministic(
                 "source_type": source_type
             }
         
-        # Step 3: Paper/Article/Lecture handling path
+        # Step 3: Unresolvable path - save directly without generate_note
+        if source_type == "Unresolvable":
+            # metadata already has note structure from create_minimal_note_direct
+            note = {
+                "summary": metadata.get("summary", ""),
+                "topics": metadata.get("topics", []),
+                "body_sections": metadata.get("body_sections", {})
+            }
+            save_result = save_markdown_direct(metadata, note, source_type, origin, output_dir)
+            if "error" in save_result:
+                return None
+            
+            return {
+                "status": "success",
+                "path": save_result.get("file_path"),
+                "source_type": source_type,
+                "note": "Fallback: Title search failed, created minimal note"
+            }
+        
+        # Step 4: Paper/Article/Lecture handling path
         # Generate note
         content = metadata.get("content_for_note", "")
         if not content:
@@ -795,15 +1055,15 @@ def process_reference_deterministic(
         return None
 
 
-# Export all tools as a list for easy agent initialization
-# Optimized tool list - deprecated tools removed to reduce agent overhead
+# Export tools for agent - optimized list
 TOOLS = [
     parse_references_file,
-    analyze_reference,  # Combines classify + extract + validate in one LLM call
-    fetch_paper_metadata,  # Now includes content_for_note field
-    fetch_web_content,  # Now includes content_for_note field
+    analyze_reference,
+    fetch_paper_metadata,
+    fetch_web_content,
     generate_note,
     fetch_book_metadata,
     save_book_to_reading_list,
+    create_minimal_note,
     save_markdown,
 ]

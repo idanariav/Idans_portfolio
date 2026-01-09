@@ -34,6 +34,7 @@ FOLDER_MAP = {
     "Lecture": "Lectures",
     "Post": "Socials",
     "Quote": "Quotes",
+    "Unresolvable": "Unresolvable",
 }
 
 # Source Type Categories
@@ -43,7 +44,8 @@ SOURCE_TYPES = [
     "Book",
     "Lecture",
     "Post",
-    "Quote"
+    "Quote",
+    "Unresolvable"
 ]
 
 # Hybrid Mode Configuration
@@ -74,6 +76,10 @@ PATTERN_ISBN = r'ISBN[:\s-]*(\d{10}|\d{13})'
 PATTERN_URL = r'https?://([^\s]+)'
 PATTERN_CITATION = r'^([A-Z][a-z]+(?:,?\s+[A-Z]\.?)+)\s+\((\d{4})\)\.?\s+(.+)'
 
+# Compound reference detection (multiple author-year patterns)
+PATTERN_AUTHOR_YEAR = r'[A-Z][a-z]+(?:,?\s+(?:[A-Z]\.?\s*)+)?(?:,?\s+(?:and|&)\s+[A-Z][a-z]+(?:,?\s+[A-Z]\.?)*)?(?:,?\s+et al\.?)?\s+\(\d{4}[a-z]?\)'
+PATTERN_JOURNAL_INFO = r'[A-Z][^.]+(?:Journal|Review|Bulletin|Science|Proceedings)[^.]+,\s*\d+(?:,|\()'
+
 # Invalid filename character patterns
 PATTERN_INVALID_FILENAME_CHARS = r"[\\/:*?\"<>|]"
 PATTERN_INVALID_FILENAME_CHARS_ALT = r'[<>:"/\\|?*]'
@@ -82,6 +88,48 @@ PATTERN_INVALID_FILENAME_CHARS_ALT = r'[<>:"/\\|?*]'
 ARTICLE_DOMAINS = ['nytimes.com', 'wsj.com', 'bbc.com', 'cnn.com', 
                    'medium.com', 'theguardian.com', 'washingtonpost.com']
 VIDEO_DOMAINS = ['youtube.com', 'youtu.be', 'vimeo.com', 'ted.com']
+
+# ============================================================================
+# Non-Citation Detection Patterns (Preprocessing)
+# ============================================================================
+
+# Narrative/commentary phrases that indicate non-bibliographic text
+NARRATIVE_STARTERS = [
+    r'^An excellent summary',
+    r'^For a comprehensive',
+    r'^The description of',
+    r'^A detailed analysis',
+    r'^See also',
+    r'^For more information',
+    r'^For further discussion',
+    r'^As discussed in',
+    r'^This is discussed',
+    r'^For an overview',
+]
+
+# Study/survey methodology markers
+METHODOLOGY_MARKERS = [
+    r'survey conducted',
+    r'fielded [A-Z][a-z]+',  # "fielded July"
+    r'\bn\s*=\s*\d+',  # sample size notation
+    r'sample of \d+',
+    r'online survey',
+    r'nationally representative',
+]
+
+# Cross-reference patterns (not resolvable citations)
+CROSS_REFERENCE_PATTERNS = [
+    r'^Ibid\.?$',
+    r'^Id\.?$',
+    r'^loc\. cit\.',
+    r'^op\. cit\.',
+    r'^supra note',
+    r'^see note \d+',
+    r'^note \d+ above',
+]
+
+# Minimum length for valid reference
+MIN_REFERENCE_LENGTH = 20
 
 # ============================================================================
 # Default Values for Missing Data

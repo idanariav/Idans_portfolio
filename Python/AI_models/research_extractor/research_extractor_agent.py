@@ -263,18 +263,51 @@ def run_agent(
     print(f"Verbose mode: {verbose}")
     print(f"{'#'*80}\n")
     
-    # Read and parse references
+    # Read and parse references (using same logic as parse_references_file tool)
     try:
         with open(input_file, "r", encoding="utf-8") as f:
             text = f.read()
         
+        # Import is_non_citation from tools
+        from research_extractor_tools import is_non_citation, is_compound_reference
+        
         # Use same parsing logic as tool
-        refs = [r.strip() for r in re.split(r"\n\s*\n", text) if r.strip()]
-        if len(refs) <= 1:
-            refs = [r.strip() for r in re.split(r"\.\s+\d{1,2}\.\s+", text) if r.strip()]
+        raw_refs = [r.strip() for r in re.split(r"\n\s*\n", text) if r.strip()]
+        if len(raw_refs) <= 1:
+            raw_refs = [r.strip() for r in re.split(r"\.\s+\d{1,2}\.\s+", text) if r.strip()]
+        
+        # Filter out obvious non-citations and split compounds
+        refs = []
+        prefiltered = []
+        split_info = []
+        
+        for ref in raw_refs:
+            is_invalid, reason = is_non_citation(ref)
+            if is_invalid:
+                prefiltered.append({"reference": ref[:100], "reason": reason})
+                continue
+            
+            # Check for compound references
+            is_compound, citations = is_compound_reference(ref)
+            if is_compound and len(citations) > 1:
+                split_info.append({"original": ref[:100], "count": len(citations)})
+                refs.extend(citations)
+            else:
+                refs.append(ref)
         
         total_refs = len(refs)
-        print(f"📚 Found {total_refs} references to process\n")
+        total_raw = len(raw_refs)
+        
+        print(f"📚 Found {total_raw} raw entries in file")
+        if prefiltered:
+            print(f"🔍 Pre-filtered {len(prefiltered)} obvious non-citations:")
+            for pf in prefiltered:
+                print(f"   ⏭️  {pf['reference']}... ({pf['reason']})")
+        if split_info:
+            print(f"✂️  Split {len(split_info)} compound references:")
+            for si in split_info:
+                print(f"   📑 {si['original']}... → {si['count']} citations")
+        print(f"📝 Processing {total_refs} valid references\n")
         
     except FileNotFoundError:
         return {
@@ -300,6 +333,11 @@ def run_agent(
     # Statistics tracking
     stats = {
         "total": total_refs,
+        "total_raw": total_raw,
+        "prefiltered": len(prefiltered),
+        "split_compounds": len(split_info),
+        "prefiltered_details": prefiltered,
+        "split_details": split_info,
         "fast_path": 0,
         "agent_path": 0,
         "success": 0,
@@ -354,7 +392,11 @@ def run_agent(
     else:
         print(f"\n📈 STATISTICS:")
     
-    print(f"  Total references: {stats['total']}")
+    print(f"  Total raw entries: {stats['total_raw']}")
+    print(f"  Pre-filtered non-citations: {stats['prefiltered']}")
+    if stats['split_compounds'] > 0:
+        print(f"  Compound references split: {stats['split_compounds']}")
+    print(f"  Valid references processed: {stats['total']}")
     print(f"  ✅ Success: {stats['success']}/{stats['total']} ({stats['success']/stats['total']*100:.1f}%)")
     print(f"  ⏭️  Skipped: {stats['skipped']}/{stats['total']} ({stats['skipped']/stats['total']*100:.1f}%)")
     print(f"  ❌ Failed: {stats['failed']}/{stats['total']} ({stats['failed']/stats['total']*100:.1f}%)")

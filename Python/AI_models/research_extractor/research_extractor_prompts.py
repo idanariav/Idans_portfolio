@@ -3,51 +3,37 @@ Prompts for the research extractor pipeline and agent.
 """
 
 # Agent System Prompt - Optimized for Gemini with function calling
-AGENT_SYSTEM_PROMPT = """<role>Metadata extraction specialist processing academic/web references and books into Obsidian markdown notes.</role>
+AGENT_SYSTEM_PROMPT = """You are a metadata extraction specialist converting academic/web references and books into Obsidian markdown notes.
 
-<constraints>
-- Skip invalid identifiers ("Ibid", too short, meaningless patterns)
+KEY BEHAVIORS:
+- parse_references_file auto-filters non-citations and splits compound references
+- Skip invalid identifiers ("Ibid", too short, meaningless)
 - Never retry failed fetches - skip immediately on timeout/error
-- Process complete batch before finishing
 - Provide brief status per reference
-</constraints>
 
-<tools>
-parse_references_file: Load references from text file
-analyze_reference: Classify source type AND extract identifier in ONE call (includes validation)
-fetch_paper_metadata: Semantic Scholar API (Research Papers only) - includes content_for_note
-fetch_web_content: Web scraping (Articles|Lectures|Posts|Quotes) - includes content_for_note
-generate_note: Create structured summary with sections (uses content_for_note from metadata)
-fetch_book_metadata: Google Books API (Books only)
-save_book_to_reading_list: Append book to reading list file (Books only)
-save_markdown: Export to categorized folder (non-Books)
-</tools>
+TOOLS:
+- parse_references_file: Load and filter references
+- analyze_reference: Classify source + extract identifier + validate (ONE call)
+- fetch_paper_metadata: Semantic Scholar (includes content_for_note)
+- fetch_web_content: Web scraping (includes content_for_note)
+- generate_note: Create structured summary from content_for_note
+- fetch_book_metadata: Google Books
+- save_book_to_reading_list: Append book entry
+- create_minimal_note: Extract from citation text when no API available
+- save_markdown: Export to categorized folder
 
-<optimized_workflow>
-1. Parse input file
-2. For each reference:
-   - Analyze reference (ONE tool call returns: source_type, identifier, validation)
-   - If invalid: SKIP with reason
-   
-   IF Book:
-   - Fetch book metadata
-   - If timeout/error: SKIP with reason
-   - Save to reading list (use sanitized origin)
-   - Report status
-   
-   ELSE (Research Paper|Article|Lecture|Post|Quote):
-   - Fetch metadata (returns data WITH content_for_note field)
-   - If timeout/error: SKIP with reason
-   - Generate note (use content_for_note from metadata)
-   - Save markdown
-   - Report status
-   
-3. Output summary: total|success|skipped|failed with reasons
-</optimized_workflow>
+WORKFLOW:
+1. Parse input → get valid references
+2. For each:
+   - Analyze (get source_type, identifier, validation)
+   - Skip if invalid
+   - Book: fetch_book_metadata → save_book_to_reading_list
+   - Research Paper/Article with Title: fetch_paper_metadata → if fails → create_minimal_note
+   - Unresolvable: create_minimal_note → save_markdown
+   - Other (URL): fetch_web_content → generate_note → save_markdown
+3. Output: total|success|skipped|failed
 
-<skip_conditions>
-Invalid identifier|Fetch timeout (>30s)|API error|Missing metadata
-</skip_conditions>
+SKIP IF: Pre-filtered|Invalid identifier|Timeout|API error|No metadata
 
 Begin when given: input_file, output_dir, origin.
 """
@@ -83,6 +69,12 @@ Article: Journalistic or online articles
 Other: Sources not fitting above
   Includes: Lectures/talks/speeches, blog posts, interviews, archival documents, classical texts
 
+Unresolvable: Valid bibliographic references that CANNOT be resolved even with title search
+  Signals: Missing both identifiers AND insufficient title (too vague/incomplete)
+  Examples: "Personal communication", "Unpublished manuscript", incomplete citations
+  Action: Extract author/year/title from citation text only
+  NOTE: If author+title+year are present, classify as Research Paper/Article and try title search first
+
 Invalid: References that do NOT meaningfully identify a source
   Signals: "ibid.", "id.", "loc. cit.", "op. cit.", "supra note", page/section numbers only, fragmentary cross-references
 </classification_categories>
@@ -115,6 +107,9 @@ Other:
   1. URL
   2. Title or descriptive name
 
+Unresolvable:
+  1. Citation text (full reference as-is for manual extraction)
+
 Invalid:
   - Identifier must be null
 
@@ -137,8 +132,8 @@ validation_reason: brief explanation if invalid, empty string if valid
 
 <output_format>
 JSON with keys:
-- source_type: Book|Research Paper|Article|Other|Invalid
-- identifier_type: DOI|CorpusID|arXiv|PubMed|URL|ISBN|Title|None
+- source_type: Book|Research Paper|Article|Other|Unresolvable|Invalid
+- identifier_type: DOI|CorpusID|arXiv|PubMed|URL|ISBN|Title|CitationText|None
 - identifier_value: string or null
 - is_valid: boolean
 - validation_reason: string (empty if valid)
@@ -155,40 +150,23 @@ Analyze the reference above and return: {{"source_type": "...", "identifier_type
 
 
 def get_generate_note_prompt(source_type: str, content: str) -> str:
-    """
-    Get prompt for generating notes from content.
-    
-    Args:
-        source_type: Type of source (Research Paper, Article, etc.)
-        content: The content to analyze
-    
-    Returns:
-        Prompt string for the LLM
-    """
-    # Customize sections based on source type
+    """Get prompt for generating notes from content."""
     if source_type == "Research Paper":
         sections = "Hypothesis|Methodology|Main Findings"
     elif source_type == "Article":
         sections = "Main Story|Credibility|Main Findings"
-    else:  # Lecture / Quote / Talk
+    else:
         sections = "Main Story|Credibility|Main Findings"
     
-    return f"""<task>Generate structured notes from {source_type}</task>
+    return f"""Generate structured notes from this {source_type}.
 
-<constraints>
-- Summary: ~50 words, focus on practical findings, clear language
+CONSTRAINTS:
+- Summary: ~50 words, practical findings, clear language
 - Sections: {sections} (max 200 words each)
-- Topics: 1-3 broad topics as single nouns
-- Use ONLY the content provided below
-</constraints>
+- Topics: 1-3 broad single-noun topics
+- Use ONLY the content provided
 
-<output_format>
-JSON with keys: summary, topics (array), body_sections (object)
-</output_format>
-
-<content>
+CONTENT:
 {content}
-</content>
 
-Based on the content above, return: {{"summary": "...", "topics": [...], "body_sections": {{...}}}}
-"""
+Return JSON: {{"summary": "...", "topics": [...], "body_sections": {{...}}}}"""
