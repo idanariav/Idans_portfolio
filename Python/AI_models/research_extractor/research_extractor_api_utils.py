@@ -12,6 +12,7 @@ import json
 import time
 import trafilatura
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from urllib.parse import urlparse, parse_qs
 
@@ -35,12 +36,17 @@ load_dotenv()
 
 
 def fetch_web_api(identifier_info):
-    """Fetch article/lecture content via metadata-first strategy."""
+    """Fetch article/lecture content via parallel strategy.
+    
+    Tries multiple methods concurrently and returns first successful result.
+    """
     url = identifier_info.get("url")
     query = identifier_info.get("identifier_value")
-
-    # 1. Metadata-first extraction
-    if url:
+    
+    def _try_metadata_extraction():
+        """Method 1: Direct metadata extraction from URL."""
+        if not url:
+            return None
         meta = extract_article_metadata(url)
         if meta and (meta.get("title") or meta.get("description")):
             authors = (
@@ -53,26 +59,38 @@ def fetch_web_api(identifier_info):
                 "content": meta.get("description") or "",
                 "authors": authors,
                 "url": url,
+                "_method": "metadata"
             }
-
-        # 2. Readability fallback
-        downloaded = trafilatura.fetch_url(url)
-        if downloaded:
-            content = trafilatura.extract(downloaded)
-            metadata = trafilatura.extract_metadata(downloaded)
-            if content:
-                authors = (
-                    [metadata.author] if metadata and metadata.author else [DEFAULT_AUTHOR]
-                )
-                return {
-                    "title": metadata.title if metadata and metadata.title else DEFAULT_TITLE,
-                    "content": content,
-                    "authors": authors,
-                    "url": url,
-                }
-
-    # 3. Tavily fallback
-    if query:
+        return None
+    
+    def _try_trafilatura():
+        """Method 2: Full content extraction with trafilatura."""
+        if not url:
+            return None
+        try:
+            downloaded = trafilatura.fetch_url(url)
+            if downloaded:
+                content = trafilatura.extract(downloaded)
+                metadata = trafilatura.extract_metadata(downloaded)
+                if content:
+                    authors = (
+                        [metadata.author] if metadata and metadata.author else [DEFAULT_AUTHOR]
+                    )
+                    return {
+                        "title": metadata.title if metadata and metadata.title else DEFAULT_TITLE,
+                        "content": content,
+                        "authors": authors,
+                        "url": url,
+                        "_method": "trafilatura"
+                    }
+        except Exception:
+            pass
+        return None
+    
+    def _try_tavily():
+        """Method 3: Tavily search fallback."""
+        if not query:
+            return None
         try:
             r = requests.post(
                 TAVILY_API_URL,
@@ -87,9 +105,35 @@ def fetch_web_api(identifier_info):
                 "content": res.get("content") or res.get("snippet"),
                 "authors": [res.get("author")] if res.get("author") else [DEFAULT_AUTHOR],
                 "url": res.get("url"),
+                "_method": "tavily"
             }
         except Exception:
             pass
+        return None
+    
+    # Run methods in parallel, return first success
+    methods = []
+    if url:
+        methods.extend([_try_metadata_extraction, _try_trafilatura])
+    if query:
+        methods.append(_try_tavily)
+    
+    if not methods:
+        return None
+    
+    # Execute with parallel threads
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(m): m.__name__ for m in methods}
+        
+        for future in as_completed(futures, timeout=API_REQUEST_TIMEOUT + 5):
+            try:
+                result = future.result()
+                if result:
+                    # Remove internal method marker before returning
+                    result.pop("_method", None)
+                    return result
+            except Exception:
+                continue
     
     return None
 

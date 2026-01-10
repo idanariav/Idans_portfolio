@@ -10,7 +10,6 @@ Each reference is processed with a fresh agent context to prevent context window
 """
 
 import os
-import re
 import traceback
 from typing import Dict, Any
 from dotenv import load_dotenv
@@ -19,7 +18,12 @@ from langchain_openai import ChatOpenAI
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-from research_extractor_tools import TOOLS, classify_reference_fast, process_reference_deterministic
+from research_extractor_tools import (
+    TOOLS,
+    classify_reference_fast,
+    process_reference_deterministic,
+    parse_references_from_text,
+)
 from research_extractor_prompts import AGENT_SYSTEM_PROMPT
 from research_extractor_constants import (
     MODEL,
@@ -263,40 +267,17 @@ def run_agent(
     print(f"Verbose mode: {verbose}")
     print(f"{'#'*80}\n")
     
-    # Read and parse references (using same logic as parse_references_file tool)
+    # Read and parse references using shared function
     try:
         with open(input_file, "r", encoding="utf-8") as f:
             text = f.read()
         
-        # Import is_non_citation from tools
-        from research_extractor_tools import is_non_citation, is_compound_reference
-        
-        # Use same parsing logic as tool
-        raw_refs = [r.strip() for r in re.split(r"\n\s*\n", text) if r.strip()]
-        if len(raw_refs) <= 1:
-            raw_refs = [r.strip() for r in re.split(r"\.\s+\d{1,2}\.\s+", text) if r.strip()]
-        
-        # Filter out obvious non-citations and split compounds
-        refs = []
-        prefiltered = []
-        split_info = []
-        
-        for ref in raw_refs:
-            is_invalid, reason = is_non_citation(ref)
-            if is_invalid:
-                prefiltered.append({"reference": ref[:100], "reason": reason})
-                continue
-            
-            # Check for compound references
-            is_compound, citations = is_compound_reference(ref)
-            if is_compound and len(citations) > 1:
-                split_info.append({"original": ref[:100], "count": len(citations)})
-                refs.extend(citations)
-            else:
-                refs.append(ref)
-        
-        total_refs = len(refs)
-        total_raw = len(raw_refs)
+        parsed = parse_references_from_text(text)
+        refs = parsed["references"]
+        prefiltered = parsed["skipped"]
+        split_info = parsed["split"]
+        total_refs = parsed["valid_count"]
+        total_raw = parsed["raw_count"]
         
         print(f"📚 Found {total_raw} raw entries in file")
         if prefiltered:

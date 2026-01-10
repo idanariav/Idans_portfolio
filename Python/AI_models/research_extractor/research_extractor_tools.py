@@ -8,12 +8,55 @@ schemas and docstrings for the agent to understand when to use them.
 import os
 import re
 import json
-from typing import Dict, Any
+from enum import Enum
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
+from difflib import SequenceMatcher
 from langchain.tools import tool
 from dotenv import load_dotenv
 from openai import OpenAI
+
+
+# ============================================================================
+# Processing Status and Result Types
+# ============================================================================
+
+class ProcessingStatus(Enum):
+    """Standardized status for reference processing results."""
+    SUCCESS = "success"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+    UNCERTAIN = "uncertain"
+
+
+@dataclass
+class ProcessingResult:
+    """Standardized result wrapper for all processing functions."""
+    status: ProcessingStatus
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    path_used: str = "agent"
+    confidence: float = 0.0
+    reference: str = ""
+    file_path: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for backwards compatibility."""
+        result = {
+            "status": self.status.value,
+            "path_used": self.path_used,
+            "confidence": self.confidence,
+            "reference": self.reference[:100] if self.reference else "",
+        }
+        if self.data:
+            result.update(self.data)
+        if self.error:
+            result["reason"] = self.error
+        if self.file_path:
+            result["file_path"] = self.file_path
+        return result
 
 from research_extractor_api_utils import (
     fetch_web_api,
@@ -333,6 +376,54 @@ def is_non_citation(reference: str) -> tuple[bool, str]:
     return (False, "")
 
 
+def parse_references_from_text(text: str) -> Dict[str, Any]:
+    """Core function to parse references from text content.
+    
+    Splits by double newlines or numbered lists, filters non-citations,
+    and splits compound references.
+    
+    Args:
+        text: Raw text content containing references
+    
+    Returns:
+        Dict with references, skipped, split info, and counts
+    """
+    # Split by double newlines or numbered lists
+    raw_refs = [r.strip() for r in re.split(PATTERN_DOUBLE_NEWLINE, text) if r.strip()]
+    if len(raw_refs) <= 1:
+        raw_refs = [r.strip() for r in re.split(PATTERN_NUMBERED_LIST, text) if r.strip()]
+    
+    # Filter out obvious non-citations and split compounds
+    valid_refs = []
+    skipped_refs = []
+    split_refs = []
+    
+    for ref in raw_refs:
+        # Check for non-citations first
+        is_invalid, reason = is_non_citation(ref)
+        if is_invalid:
+            skipped_refs.append({"reference": ref[:100], "reason": reason})
+            continue
+        
+        # Check for compound references
+        is_compound, citations = is_compound_reference(ref)
+        if is_compound and len(citations) > 1:
+            split_refs.append({"original": ref[:100], "count": len(citations)})
+            valid_refs.extend(citations)
+        else:
+            valid_refs.append(ref)
+    
+    return {
+        "references": valid_refs,
+        "skipped": skipped_refs,
+        "split": split_refs,
+        "raw_count": len(raw_refs),
+        "valid_count": len(valid_refs),
+        "skipped_count": len(skipped_refs),
+        "split_count": len(split_refs)
+    }
+
+
 @tool
 def parse_references_file(file_path: str) -> Dict[str, Any]:
     """Load and parse references from text file. Splits by double newlines or numbered lists.
@@ -345,39 +436,7 @@ def parse_references_file(file_path: str) -> Dict[str, Any]:
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
         
-        # Split by double newlines or numbered lists
-        raw_refs = [r.strip() for r in re.split(PATTERN_DOUBLE_NEWLINE, text) if r.strip()]
-        if len(raw_refs) <= 1:
-            raw_refs = [r.strip() for r in re.split(PATTERN_NUMBERED_LIST, text) if r.strip()]
-        
-        # Filter out obvious non-citations and split compounds
-        valid_refs = []
-        skipped_refs = []
-        split_refs = []
-        
-        for ref in raw_refs:
-            # Check for non-citations first
-            is_invalid, reason = is_non_citation(ref)
-            if is_invalid:
-                skipped_refs.append({"reference": ref[:100], "reason": reason})
-                continue
-            
-            # Check for compound references
-            is_compound, citations = is_compound_reference(ref)
-            if is_compound and len(citations) > 1:
-                split_refs.append({"original": ref[:100], "count": len(citations)})
-                valid_refs.extend(citations)
-            else:
-                valid_refs.append(ref)
-        
-        return {
-            "references": valid_refs,
-            "skipped": skipped_refs,
-            "split": split_refs,
-            "valid_count": len(valid_refs),
-            "skipped_count": len(skipped_refs),
-            "split_count": len(split_refs)
-        }
+        return parse_references_from_text(text)
     except FileNotFoundError:
         return {"error": f"File not found: {file_path}"}
     except Exception as e:
@@ -405,6 +464,150 @@ def analyze_reference(reference: str) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
+# ============================================================================
+# Core Functions (used by both tools and direct calls)
+# ============================================================================
+
+def _fetch_paper_metadata_core(id_type: str, id_value: str) -> Dict[str, Any]:
+    """Core logic for fetching paper metadata from Semantic Scholar/OpenAlex."""
+    try:
+        def _fetch():
+            result = fetch_semantic_scholar_metadata(id_type, id_value)
+            if result:
+                return result
+            return fetch_openalex_metadata(id_type, id_value)
+        
+        metadata = with_timeout(_fetch, timeout=FETCH_TIMEOUT)()
+        
+        if metadata and "error" not in metadata:
+            abstract = metadata.get("abstract", "")
+            tldr = metadata.get("tldr", "")
+            metadata["content_for_note"] = f"{tldr}\n\n{abstract}".strip() if tldr and abstract else (tldr or abstract or "")
+        
+        return metadata
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _fetch_web_content_core(identifier_value: str, url: str = None) -> Dict[str, Any]:
+    """Core logic for fetching web content."""
+    try:
+        info = {"identifier_value": identifier_value}
+        if url:
+            info["url"] = url
+        
+        result = with_timeout(fetch_web_api, timeout=FETCH_TIMEOUT)(info)
+        
+        if result and "error" not in result:
+            result["content_for_note"] = result.get("content") or result.get("abstract", "")
+        
+        return result if result else {"error": "No content fetched"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _generate_note_core(source_type: str, content: str) -> Dict[str, Any]:
+    """Core logic for generating structured notes."""
+    try:
+        prompt = get_generate_note_prompt(source_type, content)
+        resp = call_llm(prompt, json_format=True)
+        return json.loads(resp.choices[0].message.content)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _save_markdown_core(metadata: Dict, note: Dict, source_type: str, origin: str, output_dir: str) -> Dict[str, str]:
+    """Core logic for saving markdown files."""
+    try:
+        folder = FOLDER_MAP.get(source_type, DEFAULT_OUTPUT_FOLDER)
+        filename = _generate_filename(metadata)
+        file_path = os.path.join(output_dir, folder, f"{filename}.md")
+        
+        final_origin = origin
+        if os.path.exists(file_path):
+            existing_origins = _extract_origin_from_file(file_path)
+            if existing_origins:
+                all_origins = existing_origins + [origin]
+                final_origin = list(dict.fromkeys(all_origins))
+        
+        md_content = _build_markdown_content(metadata, note, source_type, final_origin)
+        
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(md_content)
+        
+        return {"file_path": file_path}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _save_book_to_reading_list_core(metadata: Dict, origin: str, output_dir: str) -> Dict[str, str]:
+    """Core logic for saving books to reading list."""
+    try:
+        sanitized_origin = origin.replace("[[", "").replace("]]", "").replace("(book)", "").strip()
+        file_path = os.path.join(output_dir, DEFAULT_OUTPUT_FOLDER, f"{sanitized_origin} (reading material).md")
+        
+        file_exists = os.path.exists(file_path)
+        isbn = metadata.get("isbn")
+        if file_exists and isbn:
+            with open(file_path, "r", encoding="utf-8") as f:
+                existing_content = f.read()
+            if f"ISBN: {isbn}" in existing_content:
+                return {"skipped": f"Book already in reading list (ISBN: {isbn})", "file_path": file_path}
+        
+        title = metadata.get('title', DEFAULT_TITLE)
+        authors = ", ".join(metadata.get("authors", []))
+        published = metadata.get('published_date', DEFAULT_PUBLISHED_DATE)
+        main_category = metadata.get("categories", [DEFAULT_CATEGORY])[0] if metadata.get("categories") else DEFAULT_CATEGORY
+        description = metadata.get('description', DEFAULT_DESCRIPTION)
+        identifiers = f"ISBN: {isbn}" if isbn else "No ISBN available"
+        if metadata.get('page_count'):
+            identifiers += f" | Pages: {metadata.get('page_count')}"
+        
+        book_entry = f"""## {title}
+**Author:** {authors}  
+**Publish Date:** {published}  
+**Category:** {main_category}  
+**Identifiers:** {identifiers}  
+
+**Description:** {description}
+
+---
+
+"""
+        
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        if not file_exists:
+            timestamps = get_timestamp_metadata()
+            frontmatter = f"""---
+UUID: {timestamps['uuid']}
+Created: {timestamps['created']}
+Modified: {timestamps['modified']}
+tags:
+  - {MARKDOWN_TAG_BIBLIOGRAPHY}
+Version: {FRONTMATTER_VERSION}
+publish: {str(FRONTMATTER_PUBLISH_DEFAULT).lower()}
+---
+
+# Reading Material: {sanitized_origin}
+
+"""
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(frontmatter)
+        
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write(book_entry)
+        
+        return {"file_path": file_path}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ============================================================================
+# Tool Wrappers (call core functions)
+# ============================================================================
+
 @tool
 def fetch_paper_metadata(identifier_info: str) -> Dict[str, Any]:
     """Fetch paper metadata from Semantic Scholar/OpenAlex. Includes prepared content for note generation.
@@ -412,34 +615,8 @@ def fetch_paper_metadata(identifier_info: str) -> Dict[str, Any]:
     Args: identifier_info - JSON with identifier_type and identifier_value
     Returns: {title, authors, year, abstract, tldr, url, source, content_for_note} or {error: str}
     """
-    try:
-        info = safe_json_parse(identifier_info)
-        id_type = info.get("identifier_type")
-        id_value = info.get("identifier_value")
-        
-        def _fetch():
-            # Try Semantic Scholar first
-            result = fetch_semantic_scholar_metadata(id_type, id_value)
-            if result:
-                return result
-            
-            # Fallback to OpenAlex
-            return fetch_openalex_metadata(id_type, id_value)
-        
-        metadata = with_timeout(_fetch, timeout=FETCH_TIMEOUT)()
-        
-        # Inline prepare_content_for_note logic
-        if metadata and "error" not in metadata:
-            abstract = metadata.get("abstract", "")
-            tldr = metadata.get("tldr", "")
-            if tldr and abstract:
-                metadata["content_for_note"] = f"{tldr}\n\n{abstract}".strip()
-            else:
-                metadata["content_for_note"] = tldr or abstract or ""
-        
-        return metadata
-    except Exception as e:
-        return {"error": str(e)}
+    info = safe_json_parse(identifier_info)
+    return _fetch_paper_metadata_core(info.get("identifier_type"), info.get("identifier_value"))
 
 
 @tool
@@ -449,18 +626,8 @@ def fetch_web_content(identifier_info: str) -> Dict[str, Any]:
     Args: identifier_info - JSON with identifier_value and optional url
     Returns: {title, content, authors, url, content_for_note} or {error: str}
     """
-    try:
-        info = safe_json_parse(identifier_info)
-        result = with_timeout(fetch_web_api, timeout=FETCH_TIMEOUT)(info)
-        
-        # Inline prepare_content_for_note logic
-        if result and "error" not in result:
-            result["content_for_note"] = result.get("content") or result.get("abstract", "")
-        
-        return result if result else {"error": "No content fetched"}
-    except Exception as e:
-        return {"error": str(e)}
-
+    info = safe_json_parse(identifier_info)
+    return _fetch_web_content_core(info.get("identifier_value"), info.get("url"))
 
 
 @tool
@@ -470,12 +637,7 @@ def generate_note(source_type: str, content: str) -> Dict[str, Any]:
     Args: source_type, content
     Returns: {summary: str, topics: [str], body_sections: {}} or {error: str}
     """
-    try:
-        prompt = get_generate_note_prompt(source_type, content)
-        resp = call_llm(prompt, json_format=True)
-        return json.loads(resp.choices[0].message.content)
-    except Exception as e:
-        return {"error": str(e)}
+    return _generate_note_core(source_type, content)
 
 
 @tool
@@ -485,37 +647,15 @@ def save_markdown(metadata: str, note: str, source_type: str, origin: str, outpu
     Args: metadata (JSON string or dict), note (JSON string or dict), source_type, origin, output_dir
     Returns: {file_path: str} or {error: str}
     """
-    try:
-        meta = safe_json_parse(metadata) if not isinstance(metadata, dict) else metadata
-        note_data = safe_json_parse(note) if not isinstance(note, dict) else note
-        
-        if "error" in meta:
-            return {"error": f"Failed to parse metadata: {meta.get('error')}"}
-        if "error" in note_data:
-            return {"error": f"Failed to parse note: {note_data.get('error')}"}
-        
-        folder = FOLDER_MAP.get(source_type, DEFAULT_OUTPUT_FOLDER)
-        filename = _generate_filename(meta)
-        file_path = os.path.join(output_dir, folder, f"{filename}.md")
-        
-        # Check if file exists and merge origins
-        final_origin = origin
-        if os.path.exists(file_path):
-            existing_origins = _extract_origin_from_file(file_path)
-            if existing_origins:
-                # Merge origins, avoid duplicates
-                all_origins = existing_origins + [origin]
-                final_origin = list(dict.fromkeys(all_origins))  # Remove duplicates while preserving order
-        
-        md_content = _build_markdown_content(meta, note_data, source_type, final_origin)
-        
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(md_content)
-        
-        return {"file_path": file_path}
-    except Exception as e:
-        return {"error": str(e)}
+    meta = safe_json_parse(metadata) if not isinstance(metadata, dict) else metadata
+    note_data = safe_json_parse(note) if not isinstance(note, dict) else note
+    
+    if "error" in meta:
+        return {"error": f"Failed to parse metadata: {meta.get('error')}"}
+    if "error" in note_data:
+        return {"error": f"Failed to parse note: {note_data.get('error')}"}
+    
+    return _save_markdown_core(meta, note_data, source_type, origin, output_dir)
 
 
 @tool
@@ -578,83 +718,124 @@ def save_book_to_reading_list(book_metadata: str, origin: str, output_dir: str) 
     Returns:
         Dict with file_path on success, skipped on duplicate, or error on failure
     """
-    try:
-        # Parse metadata
-        meta = safe_json_parse(book_metadata)
-        if "error" in meta:
-            return {"error": f"Invalid metadata: {meta['error']}"}
-        
-        # Sanitize origin for filename (remove [[, ]], (book))
-        sanitized_origin = origin.replace("[[", "").replace("]]", "").replace("(book)", "").strip()
-        file_path = os.path.join(output_dir, DEFAULT_OUTPUT_FOLDER, f"{sanitized_origin} (reading material).md")
-        
-        # Check if file exists and for duplicates
-        file_exists = os.path.exists(file_path)
-        isbn = meta.get("isbn")
-        if file_exists and isbn:
-            with open(file_path, "r", encoding="utf-8") as f:
-                existing_content = f.read()
-            
-            # Check if ISBN already exists in content
-            if f"ISBN: {isbn}" in existing_content:
-                return {"skipped": f"Book already in reading list (ISBN: {isbn})", "file_path": file_path}
-        
-        # Create markdown content (simple format for multi-book list)
-        title = meta.get('title', DEFAULT_TITLE)
-        authors = ", ".join(meta.get("authors", []))
-        published = meta.get('published_date', DEFAULT_PUBLISHED_DATE)
-        main_category = meta.get("categories", [DEFAULT_CATEGORY])[0] if meta.get("categories") else DEFAULT_CATEGORY
-        description = meta.get('description', DEFAULT_DESCRIPTION)
-        identifiers = f"ISBN: {isbn}" if isbn else "No ISBN available"
-        if meta.get('page_count'):
-            identifiers += f" | Pages: {meta.get('page_count')}"
-        
-        # Build book entry content
-        book_entry = f"""## {title}
-**Author:** {authors}  
-**Publish Date:** {published}  
-**Category:** {main_category}  
-**Identifiers:** {identifiers}  
-
-**Description:** {description}
-
----
-
-"""
-        
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        
-        # Add frontmatter only if creating new file
-        if not file_exists:
-            timestamps = get_timestamp_metadata()
-            frontmatter = f"""---
-UUID: {timestamps['uuid']}
-Created: {timestamps['created']}
-Modified: {timestamps['modified']}
-tags:
-  - {MARKDOWN_TAG_BIBLIOGRAPHY}
-Version: {FRONTMATTER_VERSION}
-publish: {str(FRONTMATTER_PUBLISH_DEFAULT).lower()}
----
-
-# Reading Material: {sanitized_origin}
-
-"""
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter)
-        
-        # Append book entry
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write(book_entry)
-        
-        return {"file_path": file_path}
-    except Exception as e:
-        return {"error": str(e)}
+    meta = safe_json_parse(book_metadata)
+    if "error" in meta:
+        return {"error": f"Invalid metadata: {meta['error']}"}
+    return _save_book_to_reading_list_core(meta, origin, output_dir)
 
 
 # ============================================================================
 # HYBRID MODE: Fast Deterministic Classification
 # ============================================================================
+
+def _make_classification(
+    source_type: str,
+    identifier_type: str,
+    identifier_value: str,
+    confidence: float,
+    reason: str,
+    url: str = None
+) -> Dict[str, Any]:
+    """Helper to create a classification result dict."""
+    return {
+        "is_obvious": True,
+        "confidence": confidence,
+        "source_type": source_type,
+        "identifier_type": identifier_type,
+        "identifier_value": identifier_value,
+        "url": url,
+        "reason": reason
+    }
+
+
+def _try_doi_pattern(reference: str) -> Optional[Dict[str, Any]]:
+    """Try to match DOI pattern."""
+    match = re.search(PATTERN_DOI, reference)
+    if match:
+        return _make_classification(
+            "Research Paper", "DOI", match.group(1), 0.95, "Clear DOI pattern"
+        )
+    return None
+
+
+def _try_arxiv_pattern(reference: str) -> Optional[Dict[str, Any]]:
+    """Try to match arXiv ID pattern."""
+    match = re.search(PATTERN_ARXIV, reference, re.IGNORECASE)
+    if match:
+        return _make_classification(
+            "Research Paper", "ArXiv", f"arXiv:{match.group(1)}", 0.95, "Clear ArXiv ID"
+        )
+    return None
+
+
+def _try_corpus_id_pattern(reference: str) -> Optional[Dict[str, Any]]:
+    """Try to match Semantic Scholar CorpusID."""
+    if "semanticscholar.org" in reference.lower() or "corpusid" in reference.lower():
+        match = re.search(PATTERN_CORPUSID, reference)
+        if match:
+            return _make_classification(
+                "Research Paper", "CorpusID", match.group(1), 0.90, "Clear CorpusID"
+            )
+    return None
+
+
+def _try_isbn_pattern(reference: str) -> Optional[Dict[str, Any]]:
+    """Try to match ISBN pattern."""
+    match = re.search(PATTERN_ISBN, reference, re.IGNORECASE)
+    if match:
+        return _make_classification(
+            "Book", "ISBN", match.group(1), 0.90, "Clear ISBN"
+        )
+    return None
+
+
+def _try_url_pattern(reference: str) -> Optional[Dict[str, Any]]:
+    """Try to match URL patterns and classify by domain."""
+    match = re.search(PATTERN_URL, reference)
+    if not match:
+        return None
+    
+    domain = match.group(1).lower()
+    url_full = match.group(0)
+    
+    if any(d in domain for d in ARTICLE_DOMAINS):
+        return _make_classification(
+            "Article", "URL", url_full, 0.85, "Recognized news/article domain", url_full
+        )
+    
+    if any(d in domain for d in VIDEO_DOMAINS):
+        return _make_classification(
+            "Lecture", "URL", url_full, 0.85, "Video platform URL", url_full
+        )
+    
+    return None
+
+
+def _try_citation_pattern(reference: str) -> Optional[Dict[str, Any]]:
+    """Try to match standard citation format (Author (Year). Title)."""
+    match = re.search(PATTERN_CITATION, reference)
+    if not match or len(match.group(3)) <= 20:
+        return None
+    
+    title = match.group(3).split('.')[0].strip()
+    
+    # Check for academic indicators
+    has_volume = re.search(r'\d+,\s*\d+', reference)
+    has_journal = re.search(
+        r'\b(Journal|Proceedings|Conference|Bulletin|Review|Science)\b',
+        reference, re.IGNORECASE
+    )
+    
+    if has_volume or has_journal:
+        return _make_classification(
+            "Research Paper", "Title", title, 0.75,
+            "Academic citation with title - will try API search"
+        )
+    
+    return _make_classification(
+        "Article", "Title", title, 0.70, "Citation with title - will try search"
+    )
+
 
 def classify_reference_fast(reference: str) -> Dict[str, Any]:
     """
@@ -662,300 +843,98 @@ def classify_reference_fast(reference: str) -> Dict[str, Any]:
     Avoids LLM calls for obvious references.
     
     Returns:
-        {
-            "is_obvious": bool,
-            "confidence": float,  # 0.0-1.0
-            "source_type": str or None,
-            "identifier_type": str or None,
-            "identifier_value": str or None,
-            "url": str or None,
-            "reason": str
-        }
+        Dict with is_obvious, confidence, source_type, identifier_type,
+        identifier_value, url, and reason fields.
     """
-    result = {
+    # Try each pattern in priority order
+    for pattern_fn in [
+        _try_doi_pattern,
+        _try_arxiv_pattern,
+        _try_corpus_id_pattern,
+        _try_isbn_pattern,
+        _try_url_pattern,
+        _try_citation_pattern,
+    ]:
+        result = pattern_fn(reference)
+        if result:
+            return result
+    
+    # No pattern matched - needs LLM
+    return {
         "is_obvious": False,
         "confidence": 0.0,
         "source_type": None,
         "identifier_type": None,
         "identifier_value": None,
         "url": None,
-        "reason": ""
+        "reason": "No clear pattern - requires agent analysis"
     }
-    
-    # Pattern 1: Clear DOI (highest confidence)
-    doi_match = re.search(PATTERN_DOI, reference)
-    if doi_match:
-        result.update({
-            "is_obvious": True,
-            "confidence": 0.95,
-            "source_type": "Research Paper",
-            "identifier_type": "DOI",
-            "identifier_value": doi_match.group(1),
-            "reason": "Clear DOI pattern"
-        })
-        return result
-    
-    # Pattern 2: ArXiv ID
-    arxiv_match = re.search(PATTERN_ARXIV, reference, re.IGNORECASE)
-    if arxiv_match:
-        result.update({
-            "is_obvious": True,
-            "confidence": 0.95,
-            "source_type": "Research Paper",
-            "identifier_type": "ArXiv",
-            "identifier_value": f"arXiv:{arxiv_match.group(1)}",
-            "reason": "Clear ArXiv ID"
-        })
-        return result
-    
-    # Pattern 3: Semantic Scholar CorpusID
-    if "semanticscholar.org" in reference.lower() or "corpusid" in reference.lower():
-        corpus_match = re.search(PATTERN_CORPUSID, reference)
-        if corpus_match:
-            result.update({
-                "is_obvious": True,
-                "confidence": 0.90,
-                "source_type": "Research Paper",
-                "identifier_type": "CorpusID",
-                "identifier_value": corpus_match.group(1),
-                "reason": "Clear CorpusID"
-            })
-            return result
-    
-    # Pattern 4: ISBN for books
-    isbn_match = re.search(PATTERN_ISBN, reference, re.IGNORECASE)
-    if isbn_match:
-        result.update({
-            "is_obvious": True,
-            "confidence": 0.90,
-            "source_type": "Book",
-            "identifier_type": "ISBN",
-            "identifier_value": isbn_match.group(1),
-            "reason": "Clear ISBN"
-        })
-        return result
-    
-    # Pattern 5: Clear web URLs with known domains
-    url_match = re.search(PATTERN_URL, reference)
-    if url_match:
-        domain = url_match.group(1).lower()
-        url_full = url_match.group(0)
-        
-        # Known article domains
-        if any(d in domain for d in ARTICLE_DOMAINS):
-            result.update({
-                "is_obvious": True,
-                "confidence": 0.85,
-                "source_type": "Article",
-                "identifier_type": "URL",
-                "identifier_value": url_full,
-                "url": url_full,
-                "reason": "Recognized news/article domain"
-            })
-            return result
-        
-        # YouTube/lecture domains
-        if any(d in domain for d in VIDEO_DOMAINS):
-            result.update({
-                "is_obvious": True,
-                "confidence": 0.85,
-                "source_type": "Lecture",
-                "identifier_type": "URL",
-                "identifier_value": url_full,
-                "url": url_full,
-                "reason": "Video platform URL"
-            })
-            return result
-    
-    # Pattern 6: Standard citation format with year (Author (Year). Title)
-    standard_citation = re.search(PATTERN_CITATION, reference)
-    if standard_citation and len(standard_citation.group(3)) > 20:
-        title = standard_citation.group(3).split('.')[0].strip()
-        
-        # Check if it looks like a research paper (journal indicators)
-        has_volume = re.search(r'\d+,\s*\d+', reference)  # volume, page pattern
-        has_journal_indicators = re.search(r'\b(Journal|Proceedings|Conference|Bulletin|Review|Science)\b', reference, re.IGNORECASE)
-        
-        if has_volume or has_journal_indicators:
-            # Research paper - try title search
-            result.update({
-                "is_obvious": True,
-                "confidence": 0.75,
-                "source_type": "Research Paper",
-                "identifier_type": "Title",
-                "identifier_value": title,
-                "reason": "Academic citation with title - will try API search"
-            })
-        else:
-            # Newspaper, magazine, or other - try title search for articles
-            result.update({
-                "is_obvious": True,
-                "confidence": 0.70,
-                "source_type": "Article",
-                "identifier_type": "Title",
-                "identifier_value": title,
-                "reason": "Citation with title - will try search"
-            })
-        return result
-    
-    # Ambiguous case - needs LLM
-    result["reason"] = "No clear pattern - requires agent analysis"
-    return result
 
 
 # ============================================================================
-# Direct (non-tool) versions for fast path
+# Metadata Validation (fuzzy matching)
 # ============================================================================
 
-def fetch_paper_metadata_direct(identifier_type: str, identifier_value: str) -> Dict[str, Any]:
-    """Direct version of fetch_paper_metadata without tool wrapper."""
-    try:
-        def _fetch():
-            result = fetch_semantic_scholar_metadata(identifier_type, identifier_value)
-            if result:
-                return result
-            return fetch_openalex_metadata(identifier_type, identifier_value)
-        
-        metadata = with_timeout(_fetch, timeout=FETCH_TIMEOUT)()
-        
-        # Add content_for_note
-        if metadata and "error" not in metadata:
-            abstract = metadata.get("abstract", "")
-            tldr = metadata.get("tldr", "")
-            if tldr and abstract:
-                metadata["content_for_note"] = f"{tldr}\n\n{abstract}".strip()
-            else:
-                metadata["content_for_note"] = tldr or abstract or ""
-        
-        return metadata
-    except Exception as e:
-        return {"error": str(e)}
+def _similarity_score(s1: str, s2: str) -> float:
+    """Calculate similarity between two strings (0.0 to 1.0)."""
+    if not s1 or not s2:
+        return 0.0
+    return SequenceMatcher(None, s1.lower(), s2.lower()).ratio()
 
 
-def fetch_web_content_direct(identifier_value: str, url: str = None) -> Dict[str, Any]:
-    """Direct version of fetch_web_content without tool wrapper."""
-    try:
-        info = {"identifier_value": identifier_value}
-        if url:
-            info["url"] = url
-        
-        result = with_timeout(fetch_web_api, timeout=FETCH_TIMEOUT)(info)
-        
-        # Add content_for_note
-        if result and "error" not in result:
-            result["content_for_note"] = result.get("content") or result.get("abstract", "")
-        
-        return result if result else {"error": "No content fetched"}
-    except Exception as e:
-        return {"error": str(e)}
+def _validate_metadata_match(reference: str, metadata: Dict[str, Any], threshold: float = 0.4) -> Tuple[bool, float]:
+    """
+    Validate that fetched metadata actually matches the reference.
+    Uses fuzzy matching on title and authors.
+    
+    Returns: (is_valid, confidence_score)
+    """
+    if not metadata or "error" in metadata:
+        return False, 0.0
+    
+    ref_lower = reference.lower()
+    
+    # Check title match
+    title = metadata.get("title", "")
+    title_score = _similarity_score(title, reference)
+    
+    # Also check if title words appear in reference
+    if title:
+        title_words = [w for w in title.lower().split() if len(w) > 3]
+        words_in_ref = sum(1 for w in title_words if w in ref_lower)
+        word_match_ratio = words_in_ref / len(title_words) if title_words else 0
+        title_score = max(title_score, word_match_ratio)
+    
+    # Check author match  
+    authors = metadata.get("authors", [])
+    author_score = 0.0
+    if authors:
+        # Check if any author last name appears in reference
+        for author in authors[:3]:  # Check first 3 authors
+            last_name = author.split()[-1].lower() if author else ""
+            if last_name and len(last_name) > 2 and last_name in ref_lower:
+                author_score = max(author_score, 0.8)
+                break
+    
+    # Combined score
+    combined_score = max(title_score, author_score)
+    
+    return combined_score >= threshold, combined_score
 
 
-def fetch_book_metadata_direct(identifier_type: str, identifier_value: str) -> Dict[str, Any]:
-    """Direct version of fetch_book_metadata without tool wrapper."""
-    try:
-        result = with_timeout(fetch_google_books_metadata, timeout=FETCH_TIMEOUT)(
-            identifier_type, identifier_value
-        )
-        return result if result else {"error": "No book data found"}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def generate_note_direct(source_type: str, content: str) -> Dict[str, Any]:
-    """Direct version of generate_note without tool wrapper."""
-    try:
-        prompt = get_generate_note_prompt(source_type, content)
-        resp = call_llm(prompt, json_format=True)
-        return json.loads(resp.choices[0].message.content)
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def save_markdown_direct(metadata: Dict, note: Dict, source_type: str, origin: str, output_dir: str) -> Dict[str, str]:
-    """Direct version of save_markdown without tool wrapper."""
-    try:
-        folder = FOLDER_MAP.get(source_type, DEFAULT_OUTPUT_FOLDER)
-        filename = _generate_filename(metadata)
-        file_path = os.path.join(output_dir, folder, f"{filename}.md")
-        
-        # Check if file exists and merge origins
-        final_origin = origin
-        if os.path.exists(file_path):
-            existing_origins = _extract_origin_from_file(file_path)
-            if existing_origins:
-                # Merge origins, avoid duplicates
-                all_origins = existing_origins + [origin]
-                final_origin = list(dict.fromkeys(all_origins))  # Remove duplicates while preserving order
-        
-        md_content = _build_markdown_content(metadata, note, source_type, final_origin)
-        
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(md_content)
-        
-        return {"file_path": file_path}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def create_minimal_note_direct(citation_text: str, source_type: str) -> Dict[str, Any]:
-    """Direct version of create_minimal_note without tool wrapper."""
-    try:
-        return _extract_minimal_metadata(citation_text)
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def save_book_to_reading_list_direct(metadata: Dict, origin: str, output_dir: str) -> Dict[str, str]:
-    """Direct version of save_book_to_reading_list without tool wrapper."""
-    try:
-        sanitized_origin = origin.replace("[[", "").replace("]]", "").replace("(book)", "").strip()
-        file_path = os.path.join(output_dir, DEFAULT_OUTPUT_FOLDER, f"{sanitized_origin} (reading material).md")
-        
-        file_exists = os.path.exists(file_path)
-        isbn = metadata.get("isbn")
-        if file_exists and isbn:
-            with open(file_path, "r", encoding="utf-8") as f:
-                existing_content = f.read()
-            if f"ISBN: {isbn}" in existing_content:
-                return {"skipped": f"Book already in reading list (ISBN: {isbn})", "file_path": file_path}
-        
-        title = metadata.get('title', DEFAULT_TITLE)
-        authors = ", ".join(metadata.get("authors", []))
-        published = metadata.get('published_date', DEFAULT_PUBLISHED_DATE)
-        main_category = metadata.get("categories", [DEFAULT_CATEGORY])[0] if metadata.get("categories") else DEFAULT_CATEGORY
-        description = metadata.get('description', DEFAULT_DESCRIPTION)
-        identifiers = f"ISBN: {isbn}" if isbn else "No ISBN available"
-        
-        book_entry = f"""
-### {title}
-- **Authors**: {authors}
-- **Published**: {published}
-- **Category**: {main_category}
-- **Identifiers**: {identifiers}
-- **Description**: {description}
-
----
-"""
-        
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write(book_entry)
-        
-        return {"file_path": file_path}
-    except Exception as e:
-        return {"error": str(e)}
-
+# ============================================================================
+# Deterministic Processing (uses core functions)
+# ============================================================================
 
 def process_reference_deterministic(
     reference: str,
     classification: Dict[str, Any],
     origin: str,
     output_dir: str
-) -> Dict[str, Any]:
+) -> Optional[Dict[str, Any]]:
     """
     Fast deterministic processing without agent overhead.
-    Returns result with status, or None to trigger agent fallback.
+    Returns result dict on success, or None to trigger agent fallback.
     """
     source_type = classification["source_type"]
     identifier_type = classification["identifier_type"]
@@ -963,41 +942,50 @@ def process_reference_deterministic(
     url = classification.get("url")
     
     try:
+        metadata = None
+        
         # Step 1: Fetch metadata based on source type
         if source_type == "Research Paper":
-            metadata = fetch_paper_metadata_direct(identifier_type, identifier_value)
+            metadata = _fetch_paper_metadata_core(identifier_type, identifier_value)
             
-            # If title search fails, fallback to minimal note
-            if metadata and "error" in metadata and identifier_type == "Title":
-                metadata = create_minimal_note_direct(reference, "Unresolvable")
+            # Validate metadata matches reference (especially for title searches)
+            if metadata and "error" not in metadata and identifier_type == "Title":
+                is_valid, score = _validate_metadata_match(reference, metadata)
+                if not is_valid:
+                    metadata = _extract_minimal_metadata(reference)
+                    source_type = "Unresolvable"
+            elif metadata and "error" in metadata and identifier_type == "Title":
+                metadata = _extract_minimal_metadata(reference)
                 source_type = "Unresolvable"
         
         elif source_type == "Article" and identifier_type == "Title":
-            # Try paper search first (some articles are in academic DBs)
-            metadata = fetch_paper_metadata_direct(identifier_type, identifier_value)
+            metadata = _fetch_paper_metadata_core(identifier_type, identifier_value)
             
-            # If not found, fallback to minimal note
-            if metadata and "error" in metadata:
-                metadata = create_minimal_note_direct(reference, "Unresolvable")
+            if metadata and "error" not in metadata:
+                is_valid, score = _validate_metadata_match(reference, metadata)
+                if not is_valid:
+                    metadata = _extract_minimal_metadata(reference)
+                    source_type = "Unresolvable"
+            else:
+                metadata = _extract_minimal_metadata(reference)
                 source_type = "Unresolvable"
         
         elif source_type == "Book":
-            metadata = fetch_book_metadata_direct(identifier_type, identifier_value)
+            metadata = fetch_google_books_metadata(identifier_value)
         
         elif source_type == "Unresolvable":
-            # Extract basic info from citation text only
-            metadata = create_minimal_note_direct(reference, source_type)
+            metadata = _extract_minimal_metadata(reference)
         
         else:
             # Article, Lecture, or other web content with URL
-            metadata = fetch_web_content_direct(identifier_value, url)
+            metadata = _fetch_web_content_core(identifier_value, url)
         
-        if "error" in metadata and source_type != "Unresolvable":
+        if not metadata or ("error" in metadata and source_type != "Unresolvable"):
             return None
         
         # Step 2: Book handling path
         if source_type == "Book":
-            save_result = save_book_to_reading_list_direct(metadata, origin, output_dir)
+            save_result = _save_book_to_reading_list_core(metadata, origin, output_dir)
             if "error" in save_result:
                 return None
             
@@ -1007,15 +995,14 @@ def process_reference_deterministic(
                 "source_type": source_type
             }
         
-        # Step 3: Unresolvable path - save directly without generate_note
+        # Step 3: Unresolvable path - save directly without generate_note LLM call
         if source_type == "Unresolvable":
-            # metadata already has note structure from create_minimal_note_direct
             note = {
                 "summary": metadata.get("summary", ""),
                 "topics": metadata.get("topics", []),
                 "body_sections": metadata.get("body_sections", {})
             }
-            save_result = save_markdown_direct(metadata, note, source_type, origin, output_dir)
+            save_result = _save_markdown_core(metadata, note, source_type, origin, output_dir)
             if "error" in save_result:
                 return None
             
@@ -1023,21 +1010,19 @@ def process_reference_deterministic(
                 "status": "success",
                 "path": save_result.get("file_path"),
                 "source_type": source_type,
-                "note": "Fallback: Title search failed, created minimal note"
+                "note": "Fallback: created minimal note from citation text"
             }
         
-        # Step 4: Paper/Article/Lecture handling path
-        # Generate note
+        # Step 4: Paper/Article/Lecture - generate note and save
         content = metadata.get("content_for_note", "")
         if not content:
             return None
         
-        note = generate_note_direct(source_type, content)
+        note = _generate_note_core(source_type, content)
         if "error" in note:
             return None
         
-        # Save markdown
-        save_result = save_markdown_direct(metadata, note, source_type, origin, output_dir)
+        save_result = _save_markdown_core(metadata, note, source_type, origin, output_dir)
         if "error" in save_result:
             return None
         
@@ -1047,7 +1032,7 @@ def process_reference_deterministic(
             "source_type": source_type
         }
     
-    except Exception as e:
+    except Exception:
         # Any exception triggers agent fallback
         return None
 

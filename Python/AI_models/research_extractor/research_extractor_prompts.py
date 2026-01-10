@@ -49,104 +49,33 @@ def get_analyze_reference_prompt(reference: str) -> str:
     Returns:
         Prompt string for the LLM
     """
-    return f"""<task>Analyze reference: classify source type AND extract identifier for bibliographic resolution</task>
+    return f"""Analyze this bibliographic reference. Classify type and extract the best identifier for lookup.
 
-<context>
-References from books/bibliographies are inconsistently formatted.
-Infer classification and identifier from indirect signals, not strict formatting.
-</context>
+TYPES:
+- Book: Has publisher/ISBN/"Press"/"edition", no journal info
+- Research Paper: Has journal/DOI/arXiv/volume-issue/conference
+- Article: News/magazine/blog with URL or publication name
+- Other: Lectures, talks, interviews, archival docs
+- Unresolvable: Valid ref but cannot be searched (personal comm, incomplete)
+- Invalid: Cross-refs only (ibid, op.cit, supra note, page numbers only)
 
-<classification_categories>
-Book: Standalone books/monographs
-  Signals: Publisher names, city+publisher, ISBN, "Press"/"Publishers"/"edition", no journal volume/issue
+IDENTIFIER PRIORITY:
+Papers: DOI > arXiv > CorpusID > Title
+Articles: URL > Title  
+Books: ISBN > "Title + Author"
+Other: URL > Title
+Invalid: null
 
-Research Paper: Academic papers in journals/conferences
-  Signals: Journal/conference names, volume/issue/page ranges, DOI/CorpusID/arXiv/PubMed IDs, formal academic style
+RULES:
+- Extract identifier exactly as written (don't invent/guess)
+- If author+title+year present, try as Research Paper first
+- Prefer classifying as searchable type over Unresolvable
 
-Article: Journalistic or online articles
-  Signals: Newspaper/magazine names, URLs without DOIs, publication dates without volume/issue, essays/interviews
-
-Other: Sources not fitting above
-  Includes: Lectures/talks/speeches, blog posts, interviews, archival documents, classical texts
-
-Unresolvable: Valid bibliographic references that CANNOT be resolved even with title search
-  Signals: Missing both identifiers AND insufficient title (too vague/incomplete)
-  Examples: "Personal communication", "Unpublished manuscript", incomplete citations
-  Action: Extract author/year/title from citation text only
-  NOTE: If author+title+year are present, classify as Research Paper/Article and try title search first
-
-Invalid: References that do NOT meaningfully identify a source
-  Signals: "ibid.", "id.", "loc. cit.", "op. cit.", "supra note", page/section numbers only, fragmentary cross-references
-</classification_categories>
-
-<identifier_extraction_rules>
-Must be explicitly present or directly inferable from reference text.
-Must be sufficient to locate source via search or APIs.
-Prefer stability and specificity over descriptiveness.
-
-Priority order (use first applicable):
-
-Research Papers:
-  1. DOI (format: 10.xxxx/xxxxx)
-  2. CorpusID (numeric Semantic Scholar ID)
-  3. arXiv ID (format: arXiv:1234.5678)
-  4. PubMed ID
-  5. Full paper title
-
-Articles:
-  1. URL
-  2. Canonical URL (if implied)
-  3. Full article title
-
-Books:
-  1. ISBN
-  2. Full book title + author (if ISBN missing)
-  3. Full book title
-
-Other:
-  1. URL
-  2. Title or descriptive name
-
-Unresolvable:
-  1. Citation text (full reference as-is for manual extraction)
-
-Invalid:
-  - Identifier must be null
-
-DO NOT: Invent identifiers, guess missing DOIs, normalize/rewrite identifiers, shorten titles
-</identifier_extraction_rules>
-
-<priority_rules>
-- Unresolved shorthand → Invalid, identifier null
-- DOI or equivalent present → Research Paper
-- URL without scholarly markers → Article
-- Uncertain classification → prefer Other over guessing
-</priority_rules>
-
-<validation>
-is_valid should be:
-- false: when source_type is "Invalid"
-- true: for all other valid source types
-validation_reason: brief explanation if invalid, empty string if valid
-</validation>
-
-<output_format>
-JSON with keys:
-- source_type: Book|Research Paper|Article|Other|Unresolvable|Invalid
-- identifier_type: DOI|CorpusID|arXiv|PubMed|URL|ISBN|Title|CitationText|None
-- identifier_value: string or null
-- is_valid: boolean
-- validation_reason: string (empty if valid)
-- confidence: high|medium|low
-- rationale: brief explanation of classification signals used
-</output_format>
-
-<reference>
+REFERENCE:
 {reference}
-</reference>
 
-Analyze the reference above and return: {{"source_type": "...", "identifier_type": "...", "identifier_value": "...", "is_valid": true/false, "validation_reason": "...", "confidence": "...", "rationale": "..."}}
-"""
+Return JSON:
+{{"source_type": "...", "identifier_type": "DOI|arXiv|CorpusID|URL|ISBN|Title|CitationText|None", "identifier_value": "...", "is_valid": true/false, "validation_reason": "", "confidence": "high|medium|low", "rationale": "brief signal explanation"}}"""
 
 
 def get_generate_note_prompt(source_type: str, content: str) -> str:
