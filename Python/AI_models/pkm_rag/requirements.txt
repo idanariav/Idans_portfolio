@@ -1,0 +1,15 @@
+# Embedding and vector store
+chromadb>=0.4.0
+ollama
+
+# Parsing
+pyyaml
+
+# Text splitting
+langchain-text-splitters
+
+# UI
+streamlit
+
+# Config
+python-dotenv
