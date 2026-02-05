@@ -102,6 +102,7 @@ def chunk_note(note: ParsedNote) -> list[dict]:
             "title": note.title,
             "description": note.description[:500] if note.description else "",
             "aliases": ", ".join(note.aliases),
+            "outgoing_links": ", ".join(note.outgoing_links),
             "chunk_index": i,
             "total_chunks": len(texts),
             "file_path": note.file_path,

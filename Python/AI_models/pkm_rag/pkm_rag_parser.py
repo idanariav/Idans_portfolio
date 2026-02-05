@@ -30,6 +30,7 @@ class ParsedNote:
     aliases: list[str]
     content: str
     file_path: str
+    outgoing_links: list[str]
 
 
 def parse_frontmatter(text: str) -> dict:
@@ -69,6 +70,31 @@ def extract_notes_section(text: str) -> Optional[str]:
         return None
     content = match.group(1).strip()
     return content if content else None
+
+
+def extract_wikilinks(text: str) -> list[str]:
+    """Extract target note titles from Obsidian wikilinks.
+
+    Extracts both standard wikilinks and property wikilinks, returning
+    the linked note titles (not display text).
+
+    Args:
+        text: Text containing Obsidian wikilink syntax.
+
+    Returns:
+        List of unique note titles that are linked to.
+    """
+    links: set[str] = set()
+
+    # Extract from property wiki-links: (Jump:: [[Target|display]]) or (Jump:: [[Target]])
+    for match in re.finditer(r'\([A-Za-z]+::\s*\[\[([^\]|]+)(?:\|[^\]]*)?\]\]', text):
+        links.add(match.group(1).strip())
+
+    # Extract from standard wiki-links: [[Target|display]] or [[Target]]
+    for match in re.finditer(r'\[\[([^\]|]+)(?:\|[^\]]*)?\]\]', text):
+        links.add(match.group(1).strip())
+
+    return sorted(links)
 
 
 def clean_wikilinks(text: str) -> str:
@@ -127,6 +153,9 @@ def parse_note(file_path: str) -> Optional[ParsedNote]:
     if not notes_content:
         return None
 
+    # Extract links before cleaning
+    outgoing_links = extract_wikilinks(notes_content)
+
     return ParsedNote(
         uuid=uuid,
         modified=str(frontmatter.get("Modified", "")),
@@ -135,4 +164,5 @@ def parse_note(file_path: str) -> Optional[ParsedNote]:
         aliases=_normalize_list(frontmatter.get("aliases")),
         content=clean_wikilinks(notes_content),
         file_path=file_path,
+        outgoing_links=outgoing_links,
     )

@@ -81,7 +81,7 @@ def retrieve_context(
     return formatted_context, sources
 
 
-def find_similar_notes(title: str, collection) -> list[dict]:
+def find_similar_notes(title: str, collection, filter_linked: bool = False) -> list[dict]:
     """Find notes semantically similar to the given note title.
 
     Retrieves the target note's chunks by metadata filter, uses the first
@@ -90,6 +90,7 @@ def find_similar_notes(title: str, collection) -> list[dict]:
     Args:
         title: Exact note title to find similarities for.
         collection: ChromaDB collection.
+        filter_linked: If True, exclude notes that are linked by/to the target note.
 
     Returns:
         List of dicts with title, description, similarity score.
@@ -106,9 +107,27 @@ def find_similar_notes(title: str, collection) -> list[dict]:
     target_uuid = target["metadatas"][0].get("uuid", "")
     query_text = target["documents"][0]
 
+    # Get linked notes if filtering is enabled
+    linked_titles: set[str] = set()
+    if filter_linked:
+        # Get outgoing links (notes this note links to)
+        outgoing_links_str = target["metadatas"][0].get("outgoing_links", "")
+        if outgoing_links_str:
+            linked_titles.update(link.strip() for link in outgoing_links_str.split(",") if link.strip())
+
+        # Get incoming links (notes that link to this note)
+        # We need to find all notes whose outgoing_links contain this title
+        all_notes = collection.get(include=["metadatas"])
+        for meta in all_notes["metadatas"]:
+            outgoing = meta.get("outgoing_links", "")
+            if outgoing:
+                links = {link.strip() for link in outgoing.split(",") if link.strip()}
+                if title in links:
+                    linked_titles.add(meta.get("title", ""))
+
     results = collection.query(
         query_texts=[query_text],
-        n_results=SIMILAR_TOP_K + 10,  # over-fetch to account for self-note filtering
+        n_results=SIMILAR_TOP_K + 20,  # over-fetch to account for filtering
         include=["metadatas", "distances"],
     )
 
@@ -125,6 +144,8 @@ def find_similar_notes(title: str, collection) -> list[dict]:
         if note_uuid == target_uuid:
             continue
         if note_title in seen_titles:
+            continue
+        if filter_linked and note_title in linked_titles:
             continue
 
         seen_titles.add(note_title)
@@ -158,6 +179,20 @@ def query_llm(prompt: str, system_prompt: str = SYSTEM_PROMPT) -> str:
         ],
     )
     return response["message"]["content"]
+
+
+def get_all_note_titles(collection) -> list[str]:
+    """Get all unique note titles from the collection.
+
+    Args:
+        collection: ChromaDB collection.
+
+    Returns:
+        Sorted list of unique note titles.
+    """
+    all_notes = collection.get(include=["metadatas"])
+    titles = sorted({meta.get("title", "") for meta in all_notes["metadatas"] if meta.get("title")})
+    return titles
 
 
 def render_sources(sources: list[dict]) -> None:
@@ -251,13 +286,34 @@ def run_ask_mode(collection) -> None:
 def run_similar_mode(collection) -> None:
     """Run the Find Similar mode."""
     st.subheader("Find Similar Notes")
-    st.caption("Enter a note title to find semantically similar notes. No LLM call — pure vector similarity.")
+    st.caption("Select a note to find semantically similar notes. No LLM call — pure vector similarity.")
 
-    title = st.text_input("Note title", placeholder="e.g. Agency")
+    # Get all note titles for the selector
+    if "note_titles" not in st.session_state:
+        with st.spinner("Loading note titles..."):
+            st.session_state.note_titles = get_all_note_titles(collection)
+
+    if not st.session_state.note_titles:
+        st.warning("No notes found in the collection.")
+        return
+
+    title = st.selectbox(
+        "Select a note",
+        options=st.session_state.note_titles,
+        index=None,
+        placeholder="Choose a note...",
+    )
+
+    # Filter option for excluding linked notes
+    filter_linked = st.checkbox(
+        "Exclude already linked notes",
+        value=False,
+        help="Filter out notes that are already linked by/to the requested note"
+    )
 
     if st.button("Find Similar", disabled=not title):
         with st.spinner("Searching..."):
-            similar = find_similar_notes(title.strip(), collection)
+            similar = find_similar_notes(title.strip(), collection, filter_linked=filter_linked)
 
         if not similar:
             st.warning(f"No note found with title \"{title}\". Make sure the title matches exactly.")
@@ -339,9 +395,24 @@ def run_gap_mode(collection) -> None:
 def run_devils_advocate_mode(collection) -> None:
     """Run the Devil's Advocate mode."""
     st.subheader("Devil's Advocate")
-    st.caption("Enter a note title to challenge its reasoning using your own notes as evidence.")
+    st.caption("Select a note to challenge its reasoning using your own notes as evidence.")
 
-    title = st.text_input("Note title", placeholder="e.g. Agency", key="devils_advocate_title")
+    # Get all note titles for the selector
+    if "note_titles" not in st.session_state:
+        with st.spinner("Loading note titles..."):
+            st.session_state.note_titles = get_all_note_titles(collection)
+
+    if not st.session_state.note_titles:
+        st.warning("No notes found in the collection.")
+        return
+
+    title = st.selectbox(
+        "Select a note",
+        options=st.session_state.note_titles,
+        index=None,
+        placeholder="Choose a note...",
+        key="devils_advocate_title"
+    )
 
     if st.button("Challenge", disabled=not title):
         title = title.strip()
