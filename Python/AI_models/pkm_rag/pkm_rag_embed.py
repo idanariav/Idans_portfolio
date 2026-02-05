@@ -119,12 +119,19 @@ def scan_vault(vault_path: str | None = None) -> list[str]:
     """Recursively find all .md files in the vault.
 
     Args:
-        vault_path: Root path of the Obsidian vault. Falls back to env/default.
+        vault_path: Root path of the Obsidian vault. Falls back to VAULT_PATH env var.
 
     Returns:
         List of absolute file paths.
+
+    Raises:
+        ValueError: If vault_path is not provided and VAULT_PATH env var is not set.
     """
     vault_path = vault_path or os.getenv("VAULT_PATH")
+    if not vault_path:
+        raise ValueError(
+            "Vault path not provided. Set VAULT_PATH environment variable in .env file."
+        )
     return [str(p) for p in Path(vault_path).rglob("*.md")]
 
 
