@@ -47,6 +47,12 @@ Analysing comments taken from the Board Game Geek website, and comparing the sen
 with the actual rating to see how much can we learn from looking at the comment alone.
 [Link](https://www.kaggle.com/code/idanariav/bgg-sentiment-analysis)
 
+### AI Models
+
+#### PKM RAG
+A semantic search and AI assistant for personal knowledge management. Using RAG (Retrieval-Augmented Generation), this tool embeds Obsidian notes with vector embeddings and provides multiple modes to explore and analyze your knowledge base: Q&A chat, semantic similarity search, concept connection analysis, knowledge gap identification, and critical reasoning challenges. Runs fully local using Ollama with ChromaDB for vector storage.
+[Link](https://github.com/idanariav/Idans_portfolio/tree/main/Python/AI_models/pkm_rag)
+
 ### Misc 
 
 #### Recommender system
