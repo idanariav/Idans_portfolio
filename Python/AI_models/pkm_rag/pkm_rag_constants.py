@@ -15,10 +15,10 @@ COLLECTION_NAME = "pkm_notes"
 DEFAULT_CHROMA_DB_PATH = "./chroma_db"
 
 # Chunking
-CHUNK_SIZE = 512
-CHUNK_OVERLAP = 64
+CHUNK_SIZE = 800
+CHUNK_OVERLAP = 100
 MIN_CHUNK_LENGTH = 50
-CHUNK_SEPARATORS = ["\n## ", "\n### ", "\n\n", "\n", ". ", " "]
+CHUNK_SEPARATORS = ["\n## ", "\n### ", "\n\n", "\n1. ", "\n- ", "\n", ". ", " "]
 
 # Retrieval
 TOP_K = 5

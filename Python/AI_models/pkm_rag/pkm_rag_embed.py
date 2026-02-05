@@ -7,6 +7,7 @@ Supports incremental updates and deletion detection.
 """
 
 import os
+import shutil
 from pathlib import Path
 
 import chromadb
@@ -135,24 +136,35 @@ def run_embed(
     vault_path: str | None = None,
     db_path: str | None = None,
     file_paths: list[str] | None = None,
+    force_embed: bool = False,
 ) -> dict:
     """Run the full embedding pipeline with incremental updates.
 
     Flow:
-        1. Scan vault for .md files (or use provided file_paths)
-        2. Load existing embedded state from ChromaDB
-        3. For each file: skip unchanged, delete+re-embed modified, embed new
-        4. Remove chunks for notes deleted from vault (only on full scan)
+        1. Optionally clear existing database if force_embed=True
+        2. Scan vault for .md files (or use provided file_paths)
+        3. Load existing embedded state from ChromaDB
+        4. For each file: skip unchanged, delete+re-embed modified, embed new
+        5. Remove chunks for notes deleted from vault (only on full scan)
 
     Args:
         vault_path: Obsidian vault root path.
         db_path: ChromaDB storage path.
         file_paths: Specific file paths to embed. Skips vault scan and
             deletion detection when provided.
+        force_embed: If True, clears ChromaDB and re-embeds all files.
+            Useful after changing chunking configuration.
 
     Returns:
         Stats dict with counts: new, updated, unchanged, skipped, deleted, errors.
     """
+    db_path = db_path or os.getenv("CHROMA_DB_PATH", DEFAULT_CHROMA_DB_PATH)
+
+    # Clear database if force_embed is True
+    if force_embed and Path(db_path).exists():
+        print(f"Force embed enabled - clearing {db_path}...")
+        shutil.rmtree(db_path)
+
     collection = get_collection(db_path)
     embedded_state = get_embedded_state(collection)
     files = file_paths if file_paths is not None else scan_vault(vault_path)
