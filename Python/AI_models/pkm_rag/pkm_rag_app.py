@@ -332,23 +332,36 @@ def run_similar_mode(collection) -> None:
 def run_connect_mode(collection) -> None:
     """Run the Concept Connection mode."""
     st.subheader("Connect Concepts")
-    st.caption("Enter 2+ concept names (comma-separated) to discover how they relate.")
+    st.caption("Select 2+ notes to discover how they relate.")
 
-    concepts_input = st.text_input("Concepts", placeholder="e.g. Agency, Second order thinking")
+    # Get all note titles for the selector
+    if "note_titles" not in st.session_state:
+        with st.spinner("Loading note titles..."):
+            st.session_state.note_titles = get_all_note_titles(collection)
 
-    if st.button("Explore", disabled=not concepts_input):
-        concepts = [c.strip() for c in concepts_input.split(",") if c.strip()]
-        if len(concepts) < 2:
-            st.warning("Enter at least 2 concepts separated by commas.")
+    if not st.session_state.note_titles:
+        st.warning("No notes found in the collection.")
+        return
+
+    selected_notes = st.multiselect(
+        "Select notes",
+        options=st.session_state.note_titles,
+        placeholder="Choose 2 or more notes...",
+        help="Select notes to analyze their connections and relationships"
+    )
+
+    if st.button("Explore", disabled=len(selected_notes) < 2):
+        if len(selected_notes) < 2:
+            st.warning("Select at least 2 notes.")
             return
 
         concept_contexts: dict[str, str] = {}
         all_sources: list[dict] = []
 
-        with st.spinner("Retrieving context for each concept..."):
-            for concept in concepts:
-                context, sources = retrieve_context(concept, collection)
-                concept_contexts[concept] = context if context else "No notes found."
+        with st.spinner("Retrieving context for each note..."):
+            for note_title in selected_notes:
+                context, sources = retrieve_context(note_title, collection)
+                concept_contexts[note_title] = context if context else "No notes found."
                 all_sources.extend(sources)
 
         prompt = format_explore_prompt(concept_contexts)
