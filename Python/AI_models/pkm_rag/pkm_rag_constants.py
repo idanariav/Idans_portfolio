@@ -22,10 +22,10 @@ CHUNK_SEPARATORS = ["\n## ", "\n### ", "\n\n", "\n", ". ", " "]
 
 # Retrieval
 TOP_K = 5
-SIMILARITY_THRESHOLD = 0.3
+SIMILARITY_THRESHOLD = 0.5
 SIMILAR_TOP_K = 10
 GAP_ANALYSIS_TOP_K = 15
-ENABLE_QUERY_REWRITE = True
+ENABLE_QUERY_REWRITE = False
 
 # Parsing
 NOTES_SECTION_HEADER = "## Notes"

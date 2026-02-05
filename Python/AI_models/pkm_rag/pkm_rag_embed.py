@@ -131,25 +131,31 @@ def _delete_note_chunks(collection: chromadb.Collection, uuid: str) -> None:
     collection.delete(where={"uuid": uuid})
 
 
-def run_embed(vault_path: str | None = None, db_path: str | None = None) -> dict:
+def run_embed(
+    vault_path: str | None = None,
+    db_path: str | None = None,
+    file_paths: list[str] | None = None,
+) -> dict:
     """Run the full embedding pipeline with incremental updates.
 
     Flow:
-        1. Scan vault for .md files
+        1. Scan vault for .md files (or use provided file_paths)
         2. Load existing embedded state from ChromaDB
         3. For each file: skip unchanged, delete+re-embed modified, embed new
-        4. Remove chunks for notes deleted from vault
+        4. Remove chunks for notes deleted from vault (only on full scan)
 
     Args:
         vault_path: Obsidian vault root path.
         db_path: ChromaDB storage path.
+        file_paths: Specific file paths to embed. Skips vault scan and
+            deletion detection when provided.
 
     Returns:
         Stats dict with counts: new, updated, unchanged, skipped, deleted, errors.
     """
     collection = get_collection(db_path)
     embedded_state = get_embedded_state(collection)
-    files = scan_vault(vault_path)
+    files = file_paths if file_paths is not None else scan_vault(vault_path)
 
     stats = {
         "new": 0, "updated": 0, "unchanged": 0,
@@ -191,11 +197,12 @@ def run_embed(vault_path: str | None = None, db_path: str | None = None) -> dict
             print(f"Error processing {file_path}: {e}")
             stats["errors"] += 1
 
-    # Remove chunks for notes deleted from vault
-    deleted_uuids = set(embedded_state.keys()) - seen_uuids
-    for uuid in deleted_uuids:
-        _delete_note_chunks(collection, uuid)
-        stats["deleted"] += 1
+    # Remove chunks for notes deleted from vault (only on full scan)
+    if file_paths is None:
+        deleted_uuids = set(embedded_state.keys()) - seen_uuids
+        for uuid in deleted_uuids:
+            _delete_note_chunks(collection, uuid)
+            stats["deleted"] += 1
 
     _print_stats(stats)
     return stats

@@ -67,7 +67,7 @@ def retrieve_context(
 
         header = f"[Source: {title}]"
         if description:
-            header += f"\nDescription: {description}"
+            header += f" | {description}"
         context_parts.append(f"{header}\n{doc}")
 
         if title not in seen_titles:
@@ -196,6 +196,15 @@ def rewrite_query(question: str) -> str:
 
 def run_ask_mode(collection) -> None:
     """Run the Ask (Q&A) mode with chat interface."""
+    st.caption("💡 **Tip:** Phrase questions directly (e.g., \"What is agency?\") rather than meta-questions (e.g., \"Do I have a note about agency?\") for better retrieval.")
+
+    # Query rewriting toggle
+    enable_rewrite = st.checkbox(
+        "Enable query expansion",
+        value=ENABLE_QUERY_REWRITE,
+        help="Expand queries with related terms for broader retrieval (may reduce precision)"
+    )
+
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -213,11 +222,11 @@ def run_ask_mode(collection) -> None:
         with st.chat_message("assistant"):
             # Optional query rewriting for better retrieval
             search_query = question
-            if ENABLE_QUERY_REWRITE:
-                with st.spinner("Expanding query..."):
+            if enable_rewrite:
+                with st.spinner("Rewriting query..."):
                     search_query = rewrite_query(question)
                 if search_query != question:
-                    st.caption(f"Searched for: {search_query}")
+                    st.caption(f"🔍 Searched for: {search_query}")
 
             with st.spinner("Searching notes..."):
                 context, sources = retrieve_context(search_query, collection)
@@ -264,9 +273,9 @@ def run_similar_mode(collection) -> None:
                     st.metric("Similarity", f"{note['similarity']:.1%}")
 
 
-def run_explore_mode(collection) -> None:
-    """Run the Concept Exploration mode."""
-    st.subheader("Explore Connections")
+def run_connect_mode(collection) -> None:
+    """Run the Concept Connection mode."""
+    st.subheader("Connect Concepts")
     st.caption("Enter 2+ concept names (comma-separated) to discover how they relate.")
 
     concepts_input = st.text_input("Concepts", placeholder="e.g. Agency, Second order thinking")
@@ -403,14 +412,14 @@ def main():
     if "collection" not in st.session_state:
         st.session_state.collection = get_collection()
 
-    mode = st.sidebar.radio("Mode", ["Ask", "Find Similar", "Explore", "Gap Analysis", "Devil's Advocate"])
+    mode = st.sidebar.radio("Mode", ["Ask", "Find Similar", "Connect", "Gap Analysis", "Devil's Advocate"])
 
     if mode == "Ask":
         run_ask_mode(st.session_state.collection)
     elif mode == "Find Similar":
         run_similar_mode(st.session_state.collection)
-    elif mode == "Explore":
-        run_explore_mode(st.session_state.collection)
+    elif mode == "Connect":
+        run_connect_mode(st.session_state.collection)
     elif mode == "Gap Analysis":
         run_gap_mode(st.session_state.collection)
     elif mode == "Devil's Advocate":
