@@ -293,9 +293,7 @@ ENABLE_QUERY_REWRITE = False # Query expansion toggle
 ```
 
 #### Vault Path
-```python
-DEFAULT_VAULT_PATH = "/path/to/your/vault"  # Fallback if .env not set
-```
+The vault path must be set via the `VAULT_PATH` environment variable in your `.env` file. There is no default fallback for security reasons.
 
 ### Advanced: Custom Prompts
 
