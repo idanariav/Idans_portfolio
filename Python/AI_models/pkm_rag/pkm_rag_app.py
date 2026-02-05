@@ -3,7 +3,7 @@ Streamlit interface for PKM RAG.
 
 Provides multiple modes:
 - Ask: Chat-based Q&A grounded in note context
-- Find Similar: Pure vector similarity to discover related notes
+- Find Related: Pure vector similarity to discover related notes
 """
 
 import streamlit as st
@@ -284,8 +284,8 @@ def run_ask_mode(collection) -> None:
 
 
 def run_similar_mode(collection) -> None:
-    """Run the Find Similar mode."""
-    st.subheader("Find Similar Notes")
+    """Run the Find Related mode."""
+    st.subheader("Find Related Notes")
     st.caption("Select a note to find semantically similar notes. No LLM call — pure vector similarity.")
 
     # Get all note titles for the selector
@@ -311,7 +311,7 @@ def run_similar_mode(collection) -> None:
         help="Filter out notes that are already linked by/to the requested note"
     )
 
-    if st.button("Find Similar", disabled=not title):
+    if st.button("Find Related", disabled=not title):
         with st.spinner("Searching..."):
             similar = find_similar_notes(title.strip(), collection, filter_linked=filter_linked)
 
@@ -483,11 +483,11 @@ def main():
     if "collection" not in st.session_state:
         st.session_state.collection = get_collection()
 
-    mode = st.sidebar.radio("Mode", ["Ask", "Find Similar", "Connect", "Gap Analysis", "Devil's Advocate"])
+    mode = st.sidebar.radio("Mode", ["Ask", "Find Related", "Connect", "Gap Analysis", "Devil's Advocate"])
 
     if mode == "Ask":
         run_ask_mode(st.session_state.collection)
-    elif mode == "Find Similar":
+    elif mode == "Find Related":
         run_similar_mode(st.session_state.collection)
     elif mode == "Connect":
         run_connect_mode(st.session_state.collection)
