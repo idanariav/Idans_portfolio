@@ -3,4 +3,7 @@
 __pycache__
 .env
 chroma_db/
-Python/AI_models/pkm_rag/.DS_Store
+
+# macOS system files
+.DS_Store
+**/.DS_Store
