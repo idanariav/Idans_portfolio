@@ -37,17 +37,6 @@ FOLDER_MAP = {
     "Unresolvable": "Unresolvable",
 }
 
-# Source Type Categories
-SOURCE_TYPES = [
-    "Research Paper",
-    "Article",
-    "Book",
-    "Lecture",
-    "Post",
-    "Quote",
-    "Unresolvable"
-]
-
 # Hybrid Mode Configuration
 HYBRID_MODE_ENABLED = True  # Enable fast deterministic path for obvious references
 CONFIDENCE_THRESHOLD = 0.80  # Minimum confidence to use fast path (0.0-1.0)
@@ -82,7 +71,6 @@ PATTERN_JOURNAL_INFO = r'[A-Z][^.]+(?:Journal|Review|Bulletin|Science|Proceeding
 
 # Invalid filename character patterns
 PATTERN_INVALID_FILENAME_CHARS = r"[\\/:*?\"<>|]"
-PATTERN_INVALID_FILENAME_CHARS_ALT = r'[<>:"/\\|?*]'
 
 # Web domain patterns for classification
 ARTICLE_DOMAINS = ['nytimes.com', 'wsj.com', 'bbc.com', 'cnn.com', 
@@ -139,8 +127,6 @@ DEFAULT_TITLE = "Untitled"
 DEFAULT_AUTHOR = "Unknown"
 DEFAULT_PUBLISHED_DATE = "Unknown"
 DEFAULT_YEAR = "Unknown"
-DEFAULT_SUMMARY = "No summary available."
-DEFAULT_URL_TEXT = "No URL"
 DEFAULT_DESCRIPTION = "No description available."
 DEFAULT_CATEGORY = "Uncategorized"
 

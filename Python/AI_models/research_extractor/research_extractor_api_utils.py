@@ -10,10 +10,12 @@ Handles fetching metadata from various sources:
 import os
 import json
 import time
+import logging
 import trafilatura
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 from urllib.parse import urlparse, parse_qs
 
 from research_extractor_constants import (
@@ -31,8 +33,6 @@ from research_extractor_constants import (
     DEFAULT_TITLE,
     DEFAULT_AUTHOR,
 )
-
-load_dotenv()
 
 
 def fetch_web_api(identifier_info):
@@ -83,10 +83,10 @@ def fetch_web_api(identifier_info):
                         "url": url,
                         "_method": "trafilatura"
                     }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Trafilatura extraction failed for %s: %s", url, e)
         return None
-    
+
     def _try_tavily():
         """Method 3: Tavily search fallback."""
         if not query:
@@ -107,10 +107,10 @@ def fetch_web_api(identifier_info):
                 "url": res.get("url"),
                 "_method": "tavily"
             }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Tavily search failed for '%s': %s", query, e)
         return None
-    
+
     # Run methods in parallel, return first success
     methods = []
     if url:
@@ -132,9 +132,10 @@ def fetch_web_api(identifier_info):
                     # Remove internal method marker before returning
                     result.pop("_method", None)
                     return result
-            except Exception:
+            except Exception as e:
+                logger.warning("Web fetch method %s failed: %s", futures[future], e)
                 continue
-    
+
     return None
 
 
@@ -146,31 +147,24 @@ def extract_article_metadata(url):
         if api_result:
             return api_result
     
-    # Fallback to HTML scraping
+    # Single fetch, reuse HTML for both trafilatura and manual parsing
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        }
-        r = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
-        r.raise_for_status()
-        
-        # Try trafilatura metadata extraction first (most reliable)
         downloaded = trafilatura.fetch_url(url)
         if downloaded:
             metadata = trafilatura.extract_metadata(downloaded)
-            if metadata:
+            if metadata and (metadata.title or metadata.description):
                 return {
                     "title": metadata.title,
                     "description": metadata.description,
                     "author": metadata.author,
                 }
-        
-        # Fallback to manual parsing for edge cases
-        return _extract_html_metadata(r.text)
-    
-    except Exception:
+            # Fallback to manual HTML parsing using same downloaded content
+            return _extract_html_metadata(downloaded)
+
+        return None
+
+    except Exception as e:
+        logger.warning("Article metadata extraction failed for %s: %s", url, e)
         return None
 
 
@@ -204,7 +198,8 @@ def extract_from_nyt_api(url, api_key):
             return _nyt_api_request(params)
         
         return None
-    except Exception:
+    except Exception as e:
+        logger.warning("NYT API extraction failed for %s: %s", url, e)
         return None
 
 
@@ -217,8 +212,8 @@ def _nyt_api_request(params):
         
         if data.get("response", {}).get("docs"):
             return format_nyt_api_response(data["response"]["docs"][0])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("NYT API request failed: %s", e)
     return None
 
 
@@ -303,7 +298,8 @@ def _extract_html_metadata(html_content):
         
         return meta
     
-    except Exception:
+    except Exception as e:
+        logger.warning("HTML metadata extraction failed: %s", e)
         return None
 
 
@@ -323,25 +319,25 @@ def make_api_request_with_retry(url, params=None, headers=None, timeout=30, max_
     """
     for attempt in range(max_retries):
         try:
-            if attempt == 0 and base_delay > 0:
-                time.sleep(base_delay)
-            
+            if attempt > 0 and base_delay > 0:
+                wait_time = base_delay * (2 ** (attempt - 1))
+                time.sleep(wait_time)
+
             r = requests.get(url, params=params, headers=headers, timeout=timeout)
-            
+
             # Handle rate limit
             if r.status_code == 429:
                 if attempt < max_retries - 1:
-                    wait_time = base_delay * (2 ** attempt)
-                    time.sleep(wait_time)
                     continue
                 return None
-            
+
             r.raise_for_status()
             return r.json()
-        except Exception:
+        except Exception as e:
+            logger.warning("API request to %s failed (attempt %d/%d): %s", url, attempt + 1, max_retries, e)
             if attempt == max_retries - 1:
                 return None
-    
+
     return None
 
 
@@ -384,8 +380,8 @@ def normalize_paper_metadata(data, source, id_type=None):
                         for pos in positions:
                             words[pos] = word
                     abstract = " ".join(words)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to reconstruct OpenAlex abstract: %s", e)
             
             return {
                 "title": work.get("title"),
@@ -396,7 +392,8 @@ def normalize_paper_metadata(data, source, id_type=None):
                 "url": work.get("doi") or work.get("id"),
                 "source": "OpenAlex"
             }
-    except Exception:
+    except Exception as e:
+        logger.warning("Paper metadata normalization failed (%s): %s", source, e)
         return None
 
 

@@ -8,55 +8,13 @@ schemas and docstrings for the agent to understand when to use them.
 import os
 import re
 import json
-from enum import Enum
-from dataclasses import dataclass
+import uuid
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from difflib import SequenceMatcher
 from langchain.tools import tool
-from dotenv import load_dotenv
 from openai import OpenAI
-
-
-# ============================================================================
-# Processing Status and Result Types
-# ============================================================================
-
-class ProcessingStatus(Enum):
-    """Standardized status for reference processing results."""
-    SUCCESS = "success"
-    SKIPPED = "skipped"
-    FAILED = "failed"
-    UNCERTAIN = "uncertain"
-
-
-@dataclass
-class ProcessingResult:
-    """Standardized result wrapper for all processing functions."""
-    status: ProcessingStatus
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    path_used: str = "agent"
-    confidence: float = 0.0
-    reference: str = ""
-    file_path: Optional[str] = None
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for backwards compatibility."""
-        result = {
-            "status": self.status.value,
-            "path_used": self.path_used,
-            "confidence": self.confidence,
-            "reference": self.reference[:100] if self.reference else "",
-        }
-        if self.data:
-            result.update(self.data)
-        if self.error:
-            result["reason"] = self.error
-        if self.file_path:
-            result["file_path"] = self.file_path
-        return result
 
 from research_extractor_api_utils import (
     fetch_web_api,
@@ -102,8 +60,6 @@ from research_extractor_constants import (
     FRONTMATTER_PUBLISH_DEFAULT,
 )
 
-load_dotenv()
-
 # Initialize OpenAI client
 client = OpenAI(
     api_key=os.getenv("OPENROUTER_API_KEY"),
@@ -143,7 +99,7 @@ def get_timestamp_metadata() -> Dict[str, str]:
     """Generate timestamp metadata fields."""
     now = datetime.now()
     return {
-        "uuid": now.strftime("%Y%m%d%H%M%S"),
+        "uuid": str(uuid.uuid4()),
         "created": now.strftime("%Y-%m-%d %H:%M"),
         "modified": now.strftime("%Y-%m-%d %H:%M"),
     }
@@ -172,41 +128,29 @@ def _generate_filename(metadata: Dict) -> str:
 def _extract_origin_from_file(file_path: str) -> list:
     """Extract existing Origin values from markdown file's YAML frontmatter."""
     try:
+        import yaml
+
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-        
-        # Extract frontmatter
+
         if not content.startswith("---"):
             return []
-        
-        # Find end of frontmatter
+
         end_idx = content.find("---", 3)
         if end_idx == -1:
             return []
-        
-        frontmatter = content[3:end_idx]
-        
-        # Parse Origin field (can be single line or multi-line list)
-        origins = []
-        in_origin_section = False
-        
-        for line in frontmatter.split("\n"):
-            if line.startswith("Origin:"):
-                in_origin_section = True
-                # Check if origin is on same line (old format)
-                value = line.split("Origin:", 1)[1].strip()
-                if value:
-                    origins.append(value)
-            elif in_origin_section:
-                # Check if this is a list item
-                stripped = line.strip()
-                if stripped.startswith("- "):
-                    origins.append(stripped[2:].strip())
-                elif not stripped or not stripped.startswith(" "):
-                    # End of Origin section
-                    break
-        
-        return origins
+
+        frontmatter_str = content[3:end_idx]
+        frontmatter = yaml.safe_load(frontmatter_str)
+        if not isinstance(frontmatter, dict):
+            return []
+
+        origin = frontmatter.get("Origin", [])
+        if isinstance(origin, list):
+            return origin
+        if isinstance(origin, str):
+            return [origin]
+        return []
     except Exception:
         return []
 
@@ -496,14 +440,16 @@ def _fetch_web_content_core(identifier_value: str, url: str = None) -> Dict[str,
         if url:
             info["url"] = url
         
-        result = with_timeout(fetch_web_api, timeout=FETCH_TIMEOUT)(info)
+        # fetch_web_api already manages its own thread pool and timeout via as_completed
+        result = fetch_web_api(info)
         
         if result and "error" not in result:
             result["content_for_note"] = result.get("content") or result.get("abstract", "")
-        
-        return result if result else {"error": "No content fetched"}
-    except Exception as e:
-        return {"error": str(e)}
+            return result
+
+        return None
+    except Exception:
+        return None
 
 
 def _generate_note_core(source_type: str, content: str) -> Dict[str, Any]:
@@ -517,25 +463,36 @@ def _generate_note_core(source_type: str, content: str) -> Dict[str, Any]:
 
 
 def _save_markdown_core(metadata: Dict, note: Dict, source_type: str, origin: str, output_dir: str) -> Dict[str, str]:
-    """Core logic for saving markdown files."""
+    """Core logic for saving markdown files. Appends Origin to existing files instead of overwriting."""
     try:
         folder = FOLDER_MAP.get(source_type, DEFAULT_OUTPUT_FOLDER)
         filename = _generate_filename(metadata)
         file_path = os.path.join(output_dir, folder, f"{filename}.md")
-        
-        final_origin = origin
+
         if os.path.exists(file_path):
+            # File already exists - only append the new origin to avoid destroying manual edits
             existing_origins = _extract_origin_from_file(file_path)
-            if existing_origins:
-                all_origins = existing_origins + [origin]
-                final_origin = list(dict.fromkeys(all_origins))
-        
+            if origin in existing_origins:
+                return {"file_path": file_path, "note": "Already exists with same origin"}
+            # Append new origin to frontmatter
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            # Insert new origin line before the closing ---
+            origin_line = f"  - {origin}"
+            # Find the Origin section and append
+            if "Origin:" in content:
+                content = content.replace("\n---\n", f"\n{origin_line}\n---\n", 1)
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+            return {"file_path": file_path, "note": "Appended origin to existing file"}
+
+        final_origin = origin
         md_content = _build_markdown_content(metadata, note, source_type, final_origin)
-        
+
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(md_content)
-        
+
         return {"file_path": file_path}
     except Exception as e:
         return {"error": str(e)}
@@ -828,12 +785,12 @@ def _try_citation_pattern(reference: str) -> Optional[Dict[str, Any]]:
     
     if has_volume or has_journal:
         return _make_classification(
-            "Research Paper", "Title", title, 0.75,
+            "Research Paper", "Title", title, 0.85,
             "Academic citation with title - will try API search"
         )
-    
+
     return _make_classification(
-        "Article", "Title", title, 0.70, "Citation with title - will try search"
+        "Article", "Title", title, 0.80, "Citation with title - will try search"
     )
 
 
@@ -869,6 +826,37 @@ def classify_reference_fast(reference: str) -> Dict[str, Any]:
         "url": None,
         "reason": "No clear pattern - requires agent analysis"
     }
+
+
+def classify_reference_llm(reference: str) -> Optional[Dict[str, Any]]:
+    """
+    LLM-based classification for references that regex patterns couldn't handle.
+    Returns a classification dict compatible with process_reference_deterministic,
+    or None if the reference is invalid/unclassifiable.
+    """
+    try:
+        prompt = get_analyze_reference_prompt(reference)
+        resp = call_llm(prompt, json_format=True)
+        result = json.loads(resp.choices[0].message.content)
+
+        if not result.get("is_valid", True):
+            return None  # Signal to skip
+
+        # Map LLM confidence to numeric value
+        confidence_map = {"high": 0.90, "medium": 0.75, "low": 0.60}
+        confidence = confidence_map.get(result.get("confidence", "medium"), 0.75)
+
+        return {
+            "is_obvious": True,
+            "confidence": confidence,
+            "source_type": result.get("source_type") or "Unresolvable",
+            "identifier_type": result.get("identifier_type") or "Title",
+            "identifier_value": result.get("identifier_value") or "",
+            "url": result.get("url"),
+            "reason": result.get("rationale") or "LLM classification",
+        }
+    except Exception:
+        return None
 
 
 # ============================================================================
@@ -926,6 +914,36 @@ def _validate_metadata_match(reference: str, metadata: Dict[str, Any], threshold
 # Deterministic Processing (uses core functions)
 # ============================================================================
 
+def _enrich_metadata_authors(metadata: Dict, reference: str) -> Dict:
+    """Fill in missing authors from the reference text when API didn't provide them.
+
+    Tries regex extraction first (cheap), falls back to nothing.
+    Mutates and returns metadata dict.
+    """
+    authors = metadata.get("authors", [DEFAULT_AUTHOR])
+    if authors and authors != [DEFAULT_AUTHOR] and authors != ["Unknown"]:
+        return metadata
+
+    # Try standard citation pattern: "Author, A. B. (Year). Title..."
+    match = re.search(PATTERN_CITATION, reference)
+    if match:
+        author_str = match.group(1).strip()
+        if author_str and len(author_str) > 2:
+            metadata["authors"] = [author_str]
+            return metadata
+
+    # Try broader author-year pattern
+    match = re.search(PATTERN_AUTHOR_YEAR, reference)
+    if match:
+        # Extract just the author portion (everything before the year parenthetical)
+        author_part = re.sub(r'\s*\(\d{4}[a-z]?\)\s*$', '', match.group(0)).strip()
+        if author_part and len(author_part) > 2:
+            metadata["authors"] = [author_part]
+            return metadata
+
+    return metadata
+
+
 def process_reference_deterministic(
     reference: str,
     classification: Dict[str, Any],
@@ -940,10 +958,10 @@ def process_reference_deterministic(
     identifier_type = classification["identifier_type"]
     identifier_value = classification["identifier_value"]
     url = classification.get("url")
-    
+
     try:
         metadata = None
-        
+
         # Step 1: Fetch metadata based on source type
         if source_type == "Research Paper":
             metadata = _fetch_paper_metadata_core(identifier_type, identifier_value)
@@ -982,7 +1000,11 @@ def process_reference_deterministic(
         
         if not metadata or ("error" in metadata and source_type != "Unresolvable"):
             return None
-        
+
+        # Enrich missing authors from reference text (web APIs often lack author info)
+        if source_type != "Book":
+            _enrich_metadata_authors(metadata, reference)
+
         # Step 2: Book handling path
         if source_type == "Book":
             save_result = _save_book_to_reading_list_core(metadata, origin, output_dir)
@@ -1037,9 +1059,9 @@ def process_reference_deterministic(
         return None
 
 
-# Export tools for agent - optimized list
+# Export tools for agent (parse_references_file excluded - references are
+# pre-parsed before agent invocation, so the agent never needs file access)
 TOOLS = [
-    parse_references_file,
     analyze_reference,
     fetch_paper_metadata,
     fetch_web_content,

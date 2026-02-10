@@ -1,82 +1,30 @@
 """
-LangChain function-calling agent for research metadata extraction and markdown note generation.
+Research metadata extraction and markdown note generation pipeline.
 
-Optimized workflow reduces LLM calls by:
-1. Merging classification + extraction into single analyze_reference tool
-2. Inlining content preparation into fetch tools
-3. Using function calling instead of ReAct for reduced reasoning overhead
+Hybrid processing approach:
+1. Fast path: Regex-based classification for references with clear identifiers (DOI, arXiv, URL, ISBN)
+2. LLM fallback: LLM classification for ambiguous references, then same deterministic processing
 
-Each reference is processed with a fresh agent context to prevent context window issues.
+Both paths use a single fetch/generate/save pipeline, eliminating behavioral drift.
 """
 
-import os
 import traceback
 from typing import Dict, Any
 from dotenv import load_dotenv
 
-from langchain_openai import ChatOpenAI
-from langchain.agents import create_tool_calling_agent, AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+load_dotenv()  # Load env vars before importing modules that read them at import time
 
 from research_extractor_tools import (
-    TOOLS,
     classify_reference_fast,
+    classify_reference_llm,
     process_reference_deterministic,
     parse_references_from_text,
 )
-from research_extractor_prompts import AGENT_SYSTEM_PROMPT
 from research_extractor_constants import (
-    MODEL,
-    OPENROUTER_API_BASE,
     HYBRID_MODE_ENABLED,
     CONFIDENCE_THRESHOLD,
     FAST_PATH_STATS,
 )
-
-load_dotenv()
-
-
-def create_agent_executor(verbose: bool = False):
-    """
-    Create a LangChain function-calling agent with research extraction tools.
-    
-    Uses function calling instead of ReAct to reduce reasoning overhead and
-    improve execution speed.
-    
-    Args:
-        verbose: If True, print agent reasoning and tool calls
-    
-    Returns:
-        Configured AgentExecutor
-    """
-    # Initialize LLM with OpenRouter configuration
-    llm = ChatOpenAI(
-        model=MODEL,
-        openai_api_key=os.getenv("OPENROUTER_API_KEY"),
-        openai_api_base=OPENROUTER_API_BASE,
-        temperature=0.0,  # Deterministic for consistency
-    )
-    
-    # Create function-calling agent (more efficient than ReAct)
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", AGENT_SYSTEM_PROMPT),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
-    
-    agent = create_tool_calling_agent(llm, TOOLS, prompt)
-    
-    # Create agent executor with optimized settings
-    agent_executor = AgentExecutor(
-        agent=agent,
-        tools=TOOLS,
-        verbose=verbose,
-        handle_parsing_errors=True,
-        max_iterations=15,  # Prevent runaway execution
-        early_stopping_method="force",
-    )
-    
-    return agent_executor
 
 
 def process_single_reference(
@@ -88,16 +36,20 @@ def process_single_reference(
     verbose: bool = False
 ) -> Dict[str, Any]:
     """
-    Hybrid processing: deterministic for obvious cases, agent for ambiguous.
-    
+    Hybrid processing: deterministic for obvious cases, LLM classification for ambiguous.
+
+    Uses a single processing pipeline: regex classification (fast path) or LLM
+    classification (fallback), both routed through the same deterministic
+    fetch/generate/save code.
+
     Args:
         reference: The reference text to process
         reference_num: Current reference number (for progress tracking)
         total_refs: Total number of references in batch
         origin: Source book/document name
         output_dir: Directory for saving markdown files
-        verbose: If True, print agent reasoning
-    
+        verbose: If True, print detailed processing info
+
     Returns:
         Dictionary with processing result and status
     """
@@ -135,79 +87,52 @@ def process_single_reference(
             if fast_result["confidence"] > 0:
                 print(f"   Confidence too low ({fast_result['confidence']:.2f})")
     
-    # AGENT FALLBACK: Use agent for ambiguous cases or fast path failures
-    print("🤖 Using agent for full analysis...")
-    
-    # Create fresh agent for this reference (context reset)
-    agent = create_agent_executor(verbose=verbose)
-    
-    # Prepare agent instruction with optimized workflow
-    instruction = f"""Process this single reference and save it as a markdown note:
+    # LLM CLASSIFICATION FALLBACK: Use LLM to classify, then same deterministic processing
+    print("🤖 Using LLM for classification...")
 
-Reference: {reference}
-
-Origin: {origin}
-Output Directory: {output_dir}
-
-WORKFLOW:
-1. Analyze reference (use analyze_reference - returns source_type, identifier, AND validation in one call)
-2. IF not valid: SKIP with validation_reason
-3. IF Book:
-   - Fetch book metadata
-   - Save to reading list
-4. ELSE (Research Paper/Article/etc):
-   - Fetch metadata (fetch_paper_metadata for Research Paper, fetch_web_content for others)
-   - Generate note (use content_for_note field from metadata)
-   - Save markdown
-
-IMPORTANT: You have full authority to determine if this reference should be skipped.
-Skip if: identifier is meaningless (Ibid, loc.cit, etc), too vague, or no actionable information.
-
-Report final status: SUCCESS, SKIPPED (reason), or FAILED (reason).
-"""
-    
     try:
-        # Execute agent with optimized function calling
-        if verbose:
-            print("\n🤖 Agent starting analysis...")
-        
-        result = agent.invoke({"input": instruction})
-        
-        # Extract output and determine status
-        output = result.get("output", "")
-        
-        # Check for success indicators in output
-        if "SUCCESS" in output.upper():
-            print(f"✅ SUCCESS (agent): {reference_num}/{total_refs}")
-            return {
-                "status": "success",
-                "reference": reference[:100],
-                "output": output,
-                "path_used": "agent",
-                "confidence": 0.0
-            }
-        elif "SKIP" in output.upper():
-            print(f"⏭️  SKIPPED (agent): {reference_num}/{total_refs}")
+        llm_classification = classify_reference_llm(reference)
+
+        if llm_classification is None:
+            # LLM determined this is invalid/unclassifiable
+            print(f"⏭️  SKIPPED (LLM classified as invalid): {reference_num}/{total_refs}")
             return {
                 "status": "skipped",
                 "reference": reference[:100],
-                "reason": output,
+                "reason": "LLM classified as invalid or unresolvable",
                 "path_used": "agent",
                 "confidence": 0.0
             }
+
+        id_val = llm_classification.get('identifier_value') or ''
+        print(f"🤖 LLM classified: {llm_classification['source_type']} "
+              f"({llm_classification['identifier_type']}: {id_val[:50]})")
+
+        # Route through the SAME deterministic processing as the fast path
+        det_result = process_reference_deterministic(
+            reference, llm_classification, origin, output_dir
+        )
+
+        if det_result is not None:
+            print(f"✅ SUCCESS (LLM + deterministic): {reference_num}/{total_refs}")
+            det_result["path_used"] = "agent"
+            det_result["confidence"] = llm_classification["confidence"]
+            det_result["reference"] = reference[:100]
+            return det_result
         else:
-            print(f"⚠️  UNCERTAIN (agent): {reference_num}/{total_refs}")
+            print(f"❌ FAILED (processing failed after LLM classification): {reference_num}/{total_refs}")
             return {
-                "status": "uncertain",
+                "status": "failed",
                 "reference": reference[:100],
-                "output": output,
+                "reason": "Processing failed after LLM classification",
                 "path_used": "agent",
-                "confidence": 0.0
+                "confidence": llm_classification["confidence"]
             }
-        
+
     except Exception as e:
         print(f"❌ Error processing reference: {str(e)}")
-        print(f"Traceback:\n{traceback.format_exc()}")
+        if verbose:
+            print(f"Traceback:\n{traceback.format_exc()}")
         return {
             "status": "failed",
             "reason": f"exception: {str(e)}",
@@ -328,7 +253,7 @@ def run_agent(
         "results": []
     }
     
-    # Process each reference with fresh context
+    # Process each reference
     for i, ref in enumerate(refs, 1):
         result = process_single_reference(
             reference=ref,
@@ -362,7 +287,12 @@ def run_agent(
     print(f"\n{'='*80}")
     print(f"PROCESSING COMPLETE")
     print(f"{'='*80}")
-    
+
+    if stats['total'] == 0:
+        print(f"\n📈 No valid references to process (all {stats['total_raw']} entries were pre-filtered).")
+        print(f"{'='*80}\n")
+        return stats
+
     if FAST_PATH_STATS:
         print(f"\n📊 HYBRID MODE STATISTICS:")
         print(f"  Fast Path (deterministic): {stats['fast_path']}/{stats['total']} " +
@@ -403,14 +333,22 @@ def run_agent(
 
 
 if __name__ == "__main__":
-    # Example usage
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Extract research references into Obsidian markdown notes")
+    parser.add_argument("input_file", help="Path to text file containing references")
+    parser.add_argument("output_dir", help="Directory for saving markdown files")
+    parser.add_argument("--origin", default="", help='Source book/document name (e.g., "[[Book Title]]")')
+    parser.add_argument("--verbose", action="store_true", help="Print detailed agent reasoning")
+    args = parser.parse_args()
+
     result = run_agent(
-        input_file="/Users/idanariav/Downloads/tecnhnical_inbox/a_significant_life.txt",
-        output_dir="/Users/idanariav/Downloads/tecnhnical_inbox",
-        origin="[[A Significant Life (book)]]",
-        verbose=True  # Set to False to hide agent reasoning
+        input_file=args.input_file,
+        output_dir=args.output_dir,
+        origin=args.origin,
+        verbose=args.verbose,
     )
-    
+
     print(f"\n✨ Final Summary:")
     if result['total'] > 0:
         print(f"   Success rate: {result['success']}/{result['total']} "
