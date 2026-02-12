@@ -47,6 +47,10 @@ from research_extractor_constants import (
     NARRATIVE_STARTERS,
     METHODOLOGY_MARKERS,
     CROSS_REFERENCE_PATTERNS,
+    QUOTE_PATTERNS,
+    SECTION_HEADER_PATTERNS,
+    BIOGRAPHICAL_PATTERNS,
+    DERIVATION_PATTERNS,
     MIN_REFERENCE_LENGTH,
     DEFAULT_TITLE,
     DEFAULT_AUTHOR,
@@ -58,6 +62,20 @@ from research_extractor_constants import (
     MARKDOWN_TAG_BIBLIOGRAPHY,
     FRONTMATTER_VERSION,
     FRONTMATTER_PUBLISH_DEFAULT,
+    # File-level screening constants
+    MIN_SUBSTANTIVE_LINES,
+    MIN_CITATION_RATIO,
+    # Content pre-processing patterns
+    PATTERN_MARKDOWN_IMAGE_LINE,
+    PATTERN_EBOOK_NAV_LINK_LINE,
+    PATTERN_HORIZONTAL_RULE,
+    PATTERN_SECTION_HEADER_LINE,
+    # Phase 2 non-citation patterns
+    MARKDOWN_HEADER_PATTERNS,
+    SCRIPTURE_PATTERNS,
+    COLLABORATOR_PATTERNS,
+    MARKETING_PATTERNS,
+    VAGUE_REFERENCE_PATTERNS,
 )
 
 # Initialize OpenAI client
@@ -280,58 +298,207 @@ Extract and return JSON:"""
         return [reference]
 
 
+def clean_raw_text(text: str) -> str:
+    """Remove non-reference structural lines before splitting into entries.
+
+    Strips standalone images, e-book navigation links, horizontal rules,
+    and section headers that would otherwise become spurious entries.
+    Only removes complete lines matching structural patterns; embedded
+    content within reference paragraphs is untouched.
+    """
+    clean_lines = []
+    for line in text.split('\n'):
+        # Skip standalone markdown image lines
+        if re.match(PATTERN_MARKDOWN_IMAGE_LINE, line):
+            continue
+        # Skip standalone e-book navigation links
+        if re.match(PATTERN_EBOOK_NAV_LINK_LINE, line):
+            continue
+        # Skip horizontal rules
+        if re.match(PATTERN_HORIZONTAL_RULE, line):
+            continue
+        # Skip standalone section header lines
+        if re.match(PATTERN_SECTION_HEADER_LINE, line):
+            continue
+        clean_lines.append(line)
+    return '\n'.join(clean_lines)
+
+
+def screen_file_content(text: str) -> tuple[bool, str]:
+    """Check if a file has enough extractable references to be worth processing.
+
+    Performs cheap checks before any per-reference processing:
+    1. Minimum substantive line count (catches empty/near-empty files)
+    2. Citation density ratio (catches fiction/narrative-only files)
+
+    Args:
+        text: Full file text content
+
+    Returns:
+        (should_skip, reason) tuple. If should_skip is True, the file
+        should not be processed further.
+    """
+    # Check 1: Count substantive lines (not blank, not headers, not images, not rules)
+    substantive_count = 0
+    for line in text.split('\n'):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if re.match(r'^#{1,6}\s+', stripped):
+            continue
+        if re.match(PATTERN_MARKDOWN_IMAGE_LINE, line):
+            continue
+        if re.match(PATTERN_HORIZONTAL_RULE, line):
+            continue
+        substantive_count += 1
+
+    if substantive_count < MIN_SUBSTANTIVE_LINES:
+        return (True, f"File has too few substantive lines ({substantive_count} < {MIN_SUBSTANTIVE_LINES})")
+
+    # Check 2: Citation density - split by double newlines and count entries with signals
+    entries = [e.strip() for e in re.split(PATTERN_DOUBLE_NEWLINE, text) if e.strip()]
+    if not entries:
+        return (True, "File has no parseable entries")
+
+    citation_signals = 0
+    for entry in entries:
+        has_signal = (
+            re.search(r'\b(?:19|20)\d{2}\b', entry) or  # Any year 1900-2099
+            re.search(PATTERN_DOI, entry) or             # DOI
+            re.search(PATTERN_URL, entry) or             # URL
+            re.search(PATTERN_ISBN, entry, re.IGNORECASE) or  # ISBN
+            re.search(PATTERN_ARXIV, entry, re.IGNORECASE) or  # arXiv
+            re.search(r'_[A-Z][^_]{3,}_', entry)        # Italic title (_Title_)
+        )
+        if has_signal:
+            citation_signals += 1
+
+    ratio = citation_signals / len(entries)
+    if ratio < MIN_CITATION_RATIO:
+        return (True, f"File has low citation density ({citation_signals}/{len(entries)} = {ratio:.1%} < {MIN_CITATION_RATIO:.0%})")
+
+    return (False, "")
+
+
 def is_non_citation(reference: str) -> tuple[bool, str]:
     """Deterministically detect obvious non-citations to avoid wasting LLM calls.
-    
+
+    Uses a layered safety approach:
+    - Strong citation signals (DOI, ISBN, arXiv) bypass ALL checks unconditionally
+    - Structural patterns (images, rules, headers) are unconditionally filtered
+    - Content-based patterns are guarded by year/URL presence checks
+
     Args:
         reference: The reference text to check
-    
+
     Returns:
         (is_invalid, reason) tuple
     """
     ref_lower = reference.lower()
-    
+
+    # Safety signals: presence of these means likely a real citation
+    has_year_pattern = re.search(r'\(\d{4}\)', reference)
+    has_url = re.search(PATTERN_URL, reference)
+    has_doi = re.search(PATTERN_DOI, reference)
+    has_isbn = re.search(PATTERN_ISBN, reference, re.IGNORECASE)
+    has_arxiv = re.search(PATTERN_ARXIV, reference, re.IGNORECASE)
+
+    # Strong signal early exit: DOI, ISBN, or arXiv -> always valid
+    if has_doi or has_isbn or has_arxiv:
+        return (False, "")
+
     # Check 1: Too short
     if len(reference.strip()) < MIN_REFERENCE_LENGTH:
         return (True, "Too short (< 20 chars)")
-    
-    # Check 2: Cross-references (ibid, op. cit., etc.)
+
+    # Check 2: Horizontal rules (structural, never citations)
+    if re.match(PATTERN_HORIZONTAL_RULE, reference):
+        return (True, "Horizontal rule")
+
+    # Check 3: Markdown headers (structural, never citations)
+    for pattern in MARKDOWN_HEADER_PATTERNS:
+        if re.search(pattern, reference):
+            return (True, "Chapter or section header")
+
+    # Check 4: Cross-references (ibid, op. cit., etc.)
     for pattern in CROSS_REFERENCE_PATTERNS:
         if re.search(pattern, reference, re.IGNORECASE):
             return (True, "Cross-reference only")
-    
-    # Check 3: Narrative/commentary text (but allow if contains embedded citation)
-    # A citation typically has a year in parentheses like (2009) or a URL
-    has_year_pattern = re.search(r'\(\d{4}\)', reference)
-    has_url = re.search(PATTERN_URL, reference)
-    
+
+    # Check 5: Bible/scripture references (guarded)
+    for pattern in SCRIPTURE_PATTERNS:
+        if re.search(pattern, reference, re.IGNORECASE):
+            if not has_year_pattern and not has_url:
+                return (True, "Scripture reference (not academic citation)")
+
+    # Check 6: Marketing/promotional content (guarded)
+    for pattern in MARKETING_PATTERNS:
+        if re.search(pattern, reference, re.IGNORECASE):
+            if not has_year_pattern and not has_url:
+                return (True, "Marketing or promotional content")
+
+    # Check 7: Narrative/commentary text (guarded)
     for pattern in NARRATIVE_STARTERS:
         if re.search(pattern, reference, re.IGNORECASE):
-            # If narrative text but contains a year pattern or URL, it's likely introducing a citation
             if not has_year_pattern and not has_url:
                 return (True, "Narrative text without citation")
-            # Otherwise let it pass - e.g., "For comprehensive overview, see Smith (2009)..."
-    
-    # Check 4: Study methodology descriptions
+
+    # Check 8: Study methodology descriptions
     for pattern in METHODOLOGY_MARKERS:
         if re.search(pattern, reference, re.IGNORECASE):
             return (True, "Study description")
-    
+
+    # Check 9: Standalone quotes (Phase 1 improvements)
+    for pattern in QUOTE_PATTERNS:
+        if re.search(pattern, reference):
+            return (True, "Standalone quote excerpt")
+
+    # Check 10: Section/list headers
+    for pattern in SECTION_HEADER_PATTERNS:
+        if re.search(pattern, reference):
+            return (True, "Section or list header")
+
+    # Check 11: Collaborator/acknowledgment notes (guarded)
+    for pattern in COLLABORATOR_PATTERNS:
+        if re.search(pattern, reference, re.IGNORECASE):
+            if not has_year_pattern and not has_url:
+                return (True, "Collaborator acknowledgment without citation")
+
+    # Check 12: Vague references without specific publications (guarded)
+    for pattern in VAGUE_REFERENCE_PATTERNS:
+        if re.search(pattern, reference, re.IGNORECASE):
+            if not has_year_pattern and not has_url:
+                return (True, "Vague reference without specific publication")
+
+    # Check 13: Biographical narrative
+    for pattern in BIOGRAPHICAL_PATTERNS:
+        if re.search(pattern, reference, re.IGNORECASE):
+            return (True, "Biographical narrative")
+
+    # Check 14: Mathematical derivations (guarded)
+    for pattern in DERIVATION_PATTERNS:
+        if re.search(pattern, reference, re.IGNORECASE):
+            if not has_year_pattern and not has_url:
+                return (True, "Mathematical derivation")
+
     return (False, "")
 
 
 def parse_references_from_text(text: str) -> Dict[str, Any]:
     """Core function to parse references from text content.
-    
-    Splits by double newlines or numbered lists, filters non-citations,
-    and splits compound references.
-    
+
+    Cleans structural artifacts, splits by double newlines or numbered lists,
+    filters non-citations, and splits compound references.
+
     Args:
         text: Raw text content containing references
-    
+
     Returns:
         Dict with references, skipped, split info, and counts
     """
+    # Clean structural artifacts before splitting
+    text = clean_raw_text(text)
+
     # Split by double newlines or numbered lists
     raw_refs = [r.strip() for r in re.split(PATTERN_DOUBLE_NEWLINE, text) if r.strip()]
     if len(raw_refs) <= 1:
@@ -990,10 +1157,13 @@ def process_reference_deterministic(
         
         elif source_type == "Book":
             metadata = fetch_google_books_metadata(identifier_value)
-        
-        elif source_type == "Unresolvable":
+
+        elif source_type == "Unresolvable" or source_type == "Other":
+            # Skip API calls for unresolvable/ambiguous references
+            # "Other" often has no valid URL/identifier, making API calls wasteful
             metadata = _extract_minimal_metadata(reference)
-        
+            source_type = "Unresolvable"  # Normalize for consistent handling
+
         else:
             # Article, Lecture, or other web content with URL
             metadata = _fetch_web_content_core(identifier_value, url)

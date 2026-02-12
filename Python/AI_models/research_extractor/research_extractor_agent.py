@@ -19,6 +19,7 @@ from research_extractor_tools import (
     classify_reference_llm,
     process_reference_deterministic,
     parse_references_from_text,
+    screen_file_content,
 )
 from research_extractor_constants import (
     HYBRID_MODE_ENABLED,
@@ -196,7 +197,20 @@ def run_agent(
     try:
         with open(input_file, "r", encoding="utf-8") as f:
             text = f.read()
-        
+
+        # File-level screening: skip files with insufficient reference content
+        should_skip, skip_reason = screen_file_content(text)
+        if should_skip:
+            print(f"⏭️  SKIPPED FILE: {skip_reason}")
+            return {
+                "total": 0, "total_raw": 0, "prefiltered": 0,
+                "split_compounds": 0, "prefiltered_details": [],
+                "split_details": [], "fast_path": 0, "agent_path": 0,
+                "success": 0, "skipped": 0, "failed": 0, "uncertain": 0,
+                "results": [], "file_skipped": True,
+                "file_skip_reason": skip_reason,
+            }
+
         parsed = parse_references_from_text(text)
         refs = parsed["references"]
         prefiltered = parsed["skipped"]
