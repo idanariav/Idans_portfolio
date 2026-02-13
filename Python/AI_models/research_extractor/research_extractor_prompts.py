@@ -2,6 +2,8 @@
 Prompts for the research extractor pipeline and agent.
 """
 
+from typing import List
+
 # Agent System Prompt - Optimized for Gemini with function calling
 AGENT_SYSTEM_PROMPT = """You are a metadata extraction specialist converting academic/web references and books into Obsidian markdown notes.
 
@@ -37,19 +39,11 @@ Begin when given: input_file, output_dir, origin.
 """
 
 
-def get_analyze_reference_prompt(reference: str) -> str:
-    """
-    Get prompt for analyzing a reference - classifies source type AND extracts identifier in one LLM call.
-    
-    Args:
-        reference: The reference string to analyze
-    
-    Returns:
-        Prompt string for the LLM
-    """
-    return f"""Analyze this bibliographic reference. Classify type and extract the best identifier for lookup.
+# ============================================================================
+# Shared prompt fragments for classification
+# ============================================================================
 
-TYPES:
+_CLASSIFICATION_INSTRUCTIONS = """TYPES:
 - Book: Has publisher/ISBN/"Press"/"edition", no journal info
 - Research Paper: Has journal/DOI/arXiv/volume-issue/conference
 - Article: News/magazine/blog with URL or publication name
@@ -57,23 +51,95 @@ TYPES:
 - Unresolvable: Valid ref but cannot be searched (personal comm, incomplete)
 - Invalid: Cross-refs only (ibid, op.cit, supra note, page numbers only)
 
-IDENTIFIER PRIORITY:
+IDENTIFIER PRIORITY (use these exact identifier_type values):
 Papers: DOI > arXiv > CorpusID > Title
-Articles: URL > Title  
-Books: ISBN > "Title + Author"
+Articles: URL > Title
+Books: ISBN > CitationText
 Other: URL > Title
-Invalid: null
+Unresolvable: CitationText
+Invalid: None
 
 RULES:
 - Extract identifier exactly as written (don't invent/guess)
 - If author+title+year present, try as Research Paper first
 - Prefer classifying as searchable type over Unresolvable
+- ALL string fields must be strings, never null/None. Use "" for empty values"""
+
+_CLASSIFICATION_JSON_SCHEMA = '{{"source_type": "...", "identifier_type": "DOI|arXiv|CorpusID|URL|ISBN|Title|CitationText|None", "identifier_value": "the extracted identifier or empty string", "is_valid": true/false, "validation_reason": "reason if invalid, otherwise empty string", "confidence": "high|medium|low", "rationale": "brief signal explanation"}}'
+
+
+def get_analyze_reference_prompt(reference: str) -> str:
+    """
+    Get prompt for analyzing a reference - classifies source type AND extracts identifier in one LLM call.
+
+    Args:
+        reference: The reference string to analyze
+
+    Returns:
+        Prompt string for the LLM
+    """
+    return f"""Analyze this bibliographic reference. Classify type and extract the best identifier for lookup.
+
+{_CLASSIFICATION_INSTRUCTIONS}
 
 REFERENCE:
 {reference}
 
 Return JSON:
-{{"source_type": "...", "identifier_type": "DOI|arXiv|CorpusID|URL|ISBN|Title|CitationText|None", "identifier_value": "...", "is_valid": true/false, "validation_reason": "", "confidence": "high|medium|low", "rationale": "brief signal explanation"}}"""
+{_CLASSIFICATION_JSON_SCHEMA}"""
+
+
+def get_batch_analyze_references_prompt(references: List[str]) -> str:
+    """
+    Get prompt for batch analyzing multiple references in a single LLM call.
+
+    Args:
+        references: List of reference strings to analyze
+
+    Returns:
+        Prompt string for the LLM to classify all references at once
+    """
+    refs_text = "\n\n".join(
+        f"[{i}] {ref}" for i, ref in enumerate(references)
+    )
+
+    return f"""Analyze these {len(references)} bibliographic references. For each one, classify type and extract the best identifier for lookup.
+
+{_CLASSIFICATION_INSTRUCTIONS}
+- Classify EACH reference independently
+
+REFERENCES:
+{refs_text}
+
+Return JSON with a classification for each reference keyed by its index:
+{{"classifications": {{"0": {_CLASSIFICATION_JSON_SCHEMA}, "1": {{...}}, ...}}}}"""
+
+
+def get_batch_extract_minimal_metadata_prompt(citations: List[str]) -> str:
+    """
+    Get prompt for batch extracting minimal metadata from multiple unresolvable citations.
+
+    Args:
+        citations: List of citation text strings
+
+    Returns:
+        Prompt string for the LLM
+    """
+    citations_text = "\n\n".join(
+        f"[{i}] {cit}" for i, cit in enumerate(citations)
+    )
+
+    return f"""Extract bibliographic data from each of these {len(citations)} citations.
+
+For each citation, extract: author names, year (4-digit), title, venue/publisher, a one-sentence summary, and 1-3 broad topic nouns.
+
+IMPORTANT: ALL values must be strings, never null. Use "Unknown" for missing year, "Untitled Citation" for missing title, "" for missing venue.
+
+CITATIONS:
+{citations_text}
+
+Return JSON keyed by index:
+{{"extractions": {{"0": {{"title": "...", "authors": ["..."], "year": "YYYY or Unknown", "publication_venue": "venue or empty string", "summary": "...", "topics": ["..."]}}, "1": {{...}}, ...}}}}"""
 
 
 def get_generate_note_prompt(source_type: str, content: str) -> str:
@@ -82,7 +148,7 @@ def get_generate_note_prompt(source_type: str, content: str) -> str:
         sections = "Hypothesis|Methodology|Main Findings"
     else:
         sections = "Main Story|Credibility|Main Findings"
-    
+
     return f"""Generate structured notes from this {source_type}.
 
 CONSTRAINTS:

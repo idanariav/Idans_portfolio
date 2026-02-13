@@ -9,12 +9,13 @@ import os
 import re
 import json
 import uuid
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Literal
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from difflib import SequenceMatcher
 from langchain.tools import tool
 from openai import OpenAI
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from research_extractor_api_utils import (
     fetch_web_api,
@@ -24,6 +25,8 @@ from research_extractor_api_utils import (
 )
 from research_extractor_prompts import (
     get_analyze_reference_prompt,
+    get_batch_analyze_references_prompt,
+    get_batch_extract_minimal_metadata_prompt,
     get_generate_note_prompt,
 )
 from research_extractor_constants import (
@@ -78,11 +81,143 @@ from research_extractor_constants import (
     VAGUE_REFERENCE_PATTERNS,
 )
 
+# ============================================================================
+# Pydantic Models for LLM Response Validation
+# ============================================================================
+
+SourceTypeValue = Literal[
+    "Book", "Research Paper", "Article", "Other", "Unresolvable", "Invalid"
+]
+IdentifierTypeValue = Literal[
+    "DOI", "arXiv", "CorpusID", "URL", "ISBN", "Title", "CitationText", "None"
+]
+ConfidenceLevelValue = Literal["high", "medium", "low"]
+
+CONFIDENCE_MAP: Dict[str, float] = {"high": 0.90, "medium": 0.75, "low": 0.60}
+
+
+_IDENTIFIER_TYPE_ALIASES: Dict[str, str] = {
+    "Title + Author": "CitationText",
+    "Author": "CitationText",
+    "Title + Year": "Title",
+}
+
+class ReferenceClassificationResponse(BaseModel):
+    """Validates a single reference classification from the LLM."""
+    source_type: SourceTypeValue = "Unresolvable"
+    identifier_type: IdentifierTypeValue = "Title"
+    identifier_value: str = ""
+    is_valid: bool = True
+    validation_reason: str = ""
+    confidence: ConfidenceLevelValue = "medium"
+    rationale: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def sanitize_llm_output(cls, data: Any) -> Any:
+        """Coerce None values and normalize LLM-invented field values."""
+        if not isinstance(data, dict):
+            return data
+        # Coerce None to defaults for all string fields
+        _str_defaults = {
+            "identifier_value": "",
+            "validation_reason": "",
+            "rationale": "",
+        }
+        for field, default in _str_defaults.items():
+            if field in data and data[field] is None:
+                data[field] = default
+        # Normalize identifier_type: None, "null", or aliased values
+        id_type = data.get("identifier_type")
+        if id_type is None or id_type == "null":
+            data["identifier_type"] = "Title"
+        elif isinstance(id_type, str) and id_type in _IDENTIFIER_TYPE_ALIASES:
+            data["identifier_type"] = _IDENTIFIER_TYPE_ALIASES[id_type]
+        return data
+
+    def to_classification_dict(self) -> Optional[Dict[str, Any]]:
+        """Convert to the internal classification dict, or None if invalid."""
+        if not self.is_valid:
+            return None
+        return {
+            "is_obvious": True,
+            "confidence": CONFIDENCE_MAP.get(self.confidence, 0.75),
+            "source_type": self.source_type,
+            "identifier_type": self.identifier_type,
+            "identifier_value": self.identifier_value,
+            "url": None,
+            "reason": self.rationale or "LLM classification",
+        }
+
+
+class BatchClassificationResponse(BaseModel):
+    """Validates a batch classification response from the LLM."""
+    classifications: Dict[str, ReferenceClassificationResponse]
+
+
+class MinimalMetadataResponse(BaseModel):
+    """Validates a single minimal metadata extraction from the LLM."""
+    title: str = "Untitled Citation"
+    authors: List[str] = Field(default_factory=lambda: ["Unknown"])
+    year: str = "Unknown"
+    publication_venue: str = ""
+    summary: str = "Unresolvable reference - no digital metadata available."
+    topics: List[str] = Field(default_factory=lambda: ["Uncategorized"])
+
+    @model_validator(mode="before")
+    @classmethod
+    def sanitize_llm_output(cls, data: Any) -> Any:
+        """Coerce None values to defaults for string fields."""
+        if not isinstance(data, dict):
+            return data
+        _str_defaults = {
+            "title": "Untitled Citation",
+            "year": "Unknown",
+            "publication_venue": "",
+            "summary": "Unresolvable reference - no digital metadata available.",
+        }
+        for field, default in _str_defaults.items():
+            if field in data and data[field] is None:
+                data[field] = default
+        return data
+
+    def to_metadata_dict(self, citation_text: str) -> Dict[str, Any]:
+        """Convert to the internal metadata dict format."""
+        return {
+            "title": self.title,
+            "authors": self.authors,
+            "year": self.year,
+            "publication_venue": self.publication_venue,
+            "summary": self.summary,
+            "topics": self.topics,
+            "body_sections": {"Citation": citation_text},
+            "url": "",
+            "content_for_note": citation_text,
+        }
+
+
+class BatchMinimalMetadataResponse(BaseModel):
+    """Validates a batch minimal metadata extraction response from the LLM."""
+    extractions: Dict[str, MinimalMetadataResponse]
+
+
 # Initialize OpenAI client
 client = OpenAI(
     api_key=os.getenv("OPENROUTER_API_KEY"),
     base_url=OPENROUTER_API_BASE,
 )
+
+
+def _repair_json(text: str) -> str:
+    """Best-effort repair of common LLM JSON issues before parsing."""
+    # Strip markdown code fences
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r'^```(?:json)?\s*', '', text)
+        text = re.sub(r'\s*```$', '', text)
+    # Remove trailing commas before } or ]
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    return text
 
 
 def call_llm(prompt: str, json_format: bool = False) -> Any:
@@ -124,22 +259,10 @@ def get_timestamp_metadata() -> Dict[str, str]:
 
 
 def _generate_filename(metadata: Dict) -> str:
-    """Generate standardized filename: 'Author - Title (reference)'."""
-    authors = metadata.get("authors", [DEFAULT_AUTHOR])
+    """Generate standardized filename: 'Title (reference)'."""
     title = metadata.get("title", DEFAULT_TITLE)
-    
-    # Use first author, add "et al." if multiple authors
-    if len(authors) > 1:
-        author_str = f"{authors[0]} et al."
-    else:
-        author_str = authors[0] if authors else DEFAULT_AUTHOR
-    
-    # Remove invalid filename characters
-    author_clean = re.sub(PATTERN_INVALID_FILENAME_CHARS, "", author_str)
     title_clean = re.sub(PATTERN_INVALID_FILENAME_CHARS, "", title)
-    
-    # Construct filename with truncation to avoid OS limits
-    filename = f"{author_clean} - {title_clean} (reference)"
+    filename = f"{title_clean} (reference)"
     return filename[:200]  # Keep reasonable length
 
 
@@ -799,28 +922,52 @@ def _extract_minimal_metadata(citation_text: str) -> Dict[str, Any]:
 {citation_text}
 
 Extract: author names, year (4-digit), title, venue.
-Return JSON: {{"title": str, "authors": [str], "year": str, "publication_venue": str, "summary": str, "topics": [str], "body_sections": {{}}}}"""
-    
+Return JSON: {{"title": str, "authors": [str], "year": str, "publication_venue": str, "summary": str, "topics": [str]}}"""
+
     resp = call_llm(prompt, json_format=True)
-    result = json.loads(resp.choices[0].message.content)
-    
-    # Set defaults
-    result.setdefault("title", "Untitled Citation")
-    result.setdefault("authors", ["Unknown"])
-    result.setdefault("year", "Unknown")
-    result.setdefault("summary", "Unresolvable reference - no digital metadata available.")
-    result.setdefault("topics", ["Uncategorized"])
-    result.setdefault("body_sections", {"Citation": citation_text})
-    result["url"] = ""
-    result["content_for_note"] = citation_text
-    
-    return result
+    raw = json.loads(resp.choices[0].message.content)
+    result = MinimalMetadataResponse.model_validate(raw)
+    return result.to_metadata_dict(citation_text)
+
+
+def extract_minimal_metadata_batch(
+    citations: List[str],
+) -> Dict[int, Optional[Dict[str, Any]]]:
+    """
+    Batch extraction of minimal metadata from multiple citations in a single LLM call.
+
+    Args:
+        citations: List of citation text strings
+
+    Returns:
+        Dict mapping 0-based index to metadata dict.
+        Returns empty dict on total failure (triggers per-reference fallback).
+    """
+    try:
+        prompt = get_batch_extract_minimal_metadata_prompt(citations)
+        resp = call_llm(prompt, json_format=True)
+        raw = json.loads(_repair_json(resp.choices[0].message.content))
+        batch_result = BatchMinimalMetadataResponse.model_validate(raw)
+
+        output: Dict[int, Dict[str, Any]] = {}
+        for i, citation_text in enumerate(citations):
+            key = str(i)
+            if key not in batch_result.extractions:
+                output[i] = None
+                continue
+            output[i] = batch_result.extractions[key].to_metadata_dict(citation_text)
+
+        return output
+
+    except Exception as e:
+        print(f"⚠️  Batch minimal metadata extraction error: {e}")
+        return {}
 
 
 @tool
 def create_minimal_note(citation_text: str, source_type: str) -> Dict[str, Any]:
     """Extract basic bibliographic info from citation text when no API lookup is possible.
-    
+
     Args: citation_text, source_type
     Returns: {title, authors, year, summary, topics, body_sections} or {error}
     """
@@ -1004,26 +1151,43 @@ def classify_reference_llm(reference: str) -> Optional[Dict[str, Any]]:
     try:
         prompt = get_analyze_reference_prompt(reference)
         resp = call_llm(prompt, json_format=True)
-        result = json.loads(resp.choices[0].message.content)
-
-        if not result.get("is_valid", True):
-            return None  # Signal to skip
-
-        # Map LLM confidence to numeric value
-        confidence_map = {"high": 0.90, "medium": 0.75, "low": 0.60}
-        confidence = confidence_map.get(result.get("confidence", "medium"), 0.75)
-
-        return {
-            "is_obvious": True,
-            "confidence": confidence,
-            "source_type": result.get("source_type") or "Unresolvable",
-            "identifier_type": result.get("identifier_type") or "Title",
-            "identifier_value": result.get("identifier_value") or "",
-            "url": result.get("url"),
-            "reason": result.get("rationale") or "LLM classification",
-        }
+        raw = json.loads(_repair_json(resp.choices[0].message.content))
+        result = ReferenceClassificationResponse.model_validate(raw)
+        return result.to_classification_dict()
     except Exception:
         return None
+
+
+def classify_references_batch_llm(references: List[str]) -> Dict[int, Optional[Dict[str, Any]]]:
+    """
+    Batch LLM-based classification for multiple references in a single call.
+
+    Args:
+        references: List of reference strings to classify
+
+    Returns:
+        Dict mapping 0-based index to classification dict (or None if invalid).
+        Returns empty dict on total failure (triggers per-reference fallback).
+    """
+    try:
+        prompt = get_batch_analyze_references_prompt(references)
+        resp = call_llm(prompt, json_format=True)
+        raw = json.loads(_repair_json(resp.choices[0].message.content))
+        batch_result = BatchClassificationResponse.model_validate(raw)
+
+        output: Dict[int, Optional[Dict[str, Any]]] = {}
+        for i in range(len(references)):
+            key = str(i)
+            if key not in batch_result.classifications:
+                output[i] = None
+                continue
+            output[i] = batch_result.classifications[key].to_classification_dict()
+
+        return output
+
+    except Exception as e:
+        print(f"⚠️  Batch classification error: {e}")
+        return {}
 
 
 # ============================================================================
@@ -1111,17 +1275,56 @@ def _enrich_metadata_authors(metadata: Dict, reference: str) -> Dict:
     return metadata
 
 
+def _save_as_unresolvable(
+    reference: str,
+    original_source_type: str,
+    origin: str,
+    output_dir: str,
+    reason: str,
+) -> Optional[Dict[str, Any]]:
+    """Fallback: extract minimal metadata from citation text and save as Unresolvable."""
+    try:
+        metadata = _extract_minimal_metadata(reference)
+        _enrich_metadata_authors(metadata, reference)
+        note = {
+            "summary": metadata.get("summary", ""),
+            "topics": metadata.get("topics", []),
+            "body_sections": metadata.get("body_sections", {})
+        }
+        save_result = _save_markdown_core(metadata, note, "Unresolvable", origin, output_dir)
+        if "error" in save_result:
+            return None
+        return {
+            "status": "uncertain",
+            "path": save_result.get("file_path"),
+            "source_type": "Unresolvable",
+            "original_source_type": original_source_type,
+            "note": f"Fallback: {reason}",
+        }
+    except Exception:
+        return None
+
+
 def process_reference_deterministic(
     reference: str,
     classification: Dict[str, Any],
     origin: str,
-    output_dir: str
+    output_dir: str,
+    pre_extracted_metadata: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Fast deterministic processing without agent overhead.
-    Returns result dict on success, or None to trigger agent fallback.
+
+    All API lookup failures gracefully degrade to Unresolvable with minimal
+    LLM-extracted metadata. Returns None only on catastrophic failure
+    (e.g. LLM and filesystem both unavailable).
+
+    Args:
+        pre_extracted_metadata: If provided, used instead of calling
+            _extract_minimal_metadata for Unresolvable/Other references.
     """
     source_type = classification["source_type"]
+    original_source_type = source_type
     identifier_type = classification["identifier_type"]
     identifier_value = classification["identifier_value"]
     url = classification.get("url")
@@ -1132,20 +1335,20 @@ def process_reference_deterministic(
         # Step 1: Fetch metadata based on source type
         if source_type == "Research Paper":
             metadata = _fetch_paper_metadata_core(identifier_type, identifier_value)
-            
+
             # Validate metadata matches reference (especially for title searches)
             if metadata and "error" not in metadata and identifier_type == "Title":
                 is_valid, score = _validate_metadata_match(reference, metadata)
                 if not is_valid:
                     metadata = _extract_minimal_metadata(reference)
                     source_type = "Unresolvable"
-            elif metadata and "error" in metadata and identifier_type == "Title":
+            elif not metadata or "error" in metadata:
                 metadata = _extract_minimal_metadata(reference)
                 source_type = "Unresolvable"
-        
+
         elif source_type == "Article" and identifier_type == "Title":
             metadata = _fetch_paper_metadata_core(identifier_type, identifier_value)
-            
+
             if metadata and "error" not in metadata:
                 is_valid, score = _validate_metadata_match(reference, metadata)
                 if not is_valid:
@@ -1154,14 +1357,13 @@ def process_reference_deterministic(
             else:
                 metadata = _extract_minimal_metadata(reference)
                 source_type = "Unresolvable"
-        
+
         elif source_type == "Book":
             metadata = fetch_google_books_metadata(identifier_value)
 
         elif source_type == "Unresolvable" or source_type == "Other":
-            # Skip API calls for unresolvable/ambiguous references
-            # "Other" often has no valid URL/identifier, making API calls wasteful
-            metadata = _extract_minimal_metadata(reference)
+            # Use pre-extracted metadata if available, otherwise call LLM
+            metadata = pre_extracted_metadata or _extract_minimal_metadata(reference)
             source_type = "Unresolvable"  # Normalize for consistent handling
 
         else:
@@ -1169,7 +1371,8 @@ def process_reference_deterministic(
             metadata = _fetch_web_content_core(identifier_value, url)
         
         if not metadata or ("error" in metadata and source_type != "Unresolvable"):
-            return None
+            metadata = _extract_minimal_metadata(reference)
+            source_type = "Unresolvable"
 
         # Enrich missing authors from reference text (web APIs often lack author info)
         if source_type != "Book":
@@ -1178,14 +1381,16 @@ def process_reference_deterministic(
         # Step 2: Book handling path
         if source_type == "Book":
             save_result = _save_book_to_reading_list_core(metadata, origin, output_dir)
-            if "error" in save_result:
-                return None
-            
-            return {
-                "status": "success",
-                "path": save_result.get("file_path"),
-                "source_type": source_type
-            }
+            if "error" not in save_result:
+                return {
+                    "status": "success",
+                    "path": save_result.get("file_path"),
+                    "source_type": source_type
+                }
+            # Book save failed — degrade to Unresolvable
+            metadata = _extract_minimal_metadata(reference)
+            _enrich_metadata_authors(metadata, reference)
+            source_type = "Unresolvable"
         
         # Step 3: Unresolvable path - save directly without generate_note LLM call
         if source_type == "Unresolvable":
@@ -1197,22 +1402,30 @@ def process_reference_deterministic(
             save_result = _save_markdown_core(metadata, note, source_type, origin, output_dir)
             if "error" in save_result:
                 return None
-            
+
+            status = "uncertain" if original_source_type != source_type else "success"
             return {
-                "status": "success",
+                "status": status,
                 "path": save_result.get("file_path"),
                 "source_type": source_type,
+                "original_source_type": original_source_type,
                 "note": "Fallback: created minimal note from citation text"
             }
         
         # Step 4: Paper/Article/Lecture - generate note and save
         content = metadata.get("content_for_note", "")
         if not content:
-            return None
-        
+            return _save_as_unresolvable(
+                reference, original_source_type, origin, output_dir,
+                "no content available for note generation",
+            )
+
         note = _generate_note_core(source_type, content)
         if "error" in note:
-            return None
+            return _save_as_unresolvable(
+                reference, original_source_type, origin, output_dir,
+                "note generation failed",
+            )
         
         save_result = _save_markdown_core(metadata, note, source_type, origin, output_dir)
         if "error" in save_result:
@@ -1225,8 +1438,11 @@ def process_reference_deterministic(
         }
     
     except Exception:
-        # Any exception triggers agent fallback
-        return None
+        # Final fallback: try to save as Unresolvable
+        return _save_as_unresolvable(
+            reference, original_source_type, origin, output_dir,
+            "exception during processing",
+        )
 
 
 # Export tools for agent (parse_references_file excluded - references are

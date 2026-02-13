@@ -17,6 +17,8 @@ load_dotenv()  # Load env vars before importing modules that read them at import
 from research_extractor_tools import (
     classify_reference_fast,
     classify_reference_llm,
+    classify_references_batch_llm,
+    extract_minimal_metadata_batch,
     process_reference_deterministic,
     parse_references_from_text,
     screen_file_content,
@@ -25,122 +27,8 @@ from research_extractor_constants import (
     HYBRID_MODE_ENABLED,
     CONFIDENCE_THRESHOLD,
     FAST_PATH_STATS,
+    BATCH_SIZE,
 )
-
-
-def process_single_reference(
-    reference: str,
-    reference_num: int,
-    total_refs: int,
-    origin: str,
-    output_dir: str,
-    verbose: bool = False
-) -> Dict[str, Any]:
-    """
-    Hybrid processing: deterministic for obvious cases, LLM classification for ambiguous.
-
-    Uses a single processing pipeline: regex classification (fast path) or LLM
-    classification (fallback), both routed through the same deterministic
-    fetch/generate/save code.
-
-    Args:
-        reference: The reference text to process
-        reference_num: Current reference number (for progress tracking)
-        total_refs: Total number of references in batch
-        origin: Source book/document name
-        output_dir: Directory for saving markdown files
-        verbose: If True, print detailed processing info
-
-    Returns:
-        Dictionary with processing result and status
-    """
-    print(f"\n{'='*80}")
-    print(f"Processing reference {reference_num}/{total_refs}")
-    print(f"{'='*80}")
-    print(f"Reference: {reference[:200]}..." if len(reference) > 200 else f"Reference: {reference}")
-    
-    # Try fast path if hybrid mode enabled
-    if HYBRID_MODE_ENABLED:
-        fast_result = classify_reference_fast(reference)
-        
-        if fast_result["is_obvious"] and fast_result["confidence"] >= CONFIDENCE_THRESHOLD:
-            # FAST PATH: Deterministic processing
-            print(f"🚀 FAST PATH: {fast_result['reason']} (confidence: {fast_result['confidence']:.2f})")
-            print(f"   Type: {fast_result['source_type']}, ID: {fast_result['identifier_type']}")
-            
-            det_result = process_reference_deterministic(
-                reference, fast_result, origin, output_dir
-            )
-            
-            if det_result is not None:
-                # Fast path succeeded
-                print(f"✅ SUCCESS (deterministic): {reference_num}/{total_refs}")
-                det_result["path_used"] = "deterministic"
-                det_result["confidence"] = fast_result["confidence"]
-                det_result["reference"] = reference[:100]
-                return det_result
-            else:
-                # Fast path failed - fallback to agent
-                print(f"⚠️  Fast path failed, falling back to agent...")
-        else:
-            # Low confidence or ambiguous - use agent
-            print(f"🤖 AGENT PATH: {fast_result['reason']}")
-            if fast_result["confidence"] > 0:
-                print(f"   Confidence too low ({fast_result['confidence']:.2f})")
-    
-    # LLM CLASSIFICATION FALLBACK: Use LLM to classify, then same deterministic processing
-    print("🤖 Using LLM for classification...")
-
-    try:
-        llm_classification = classify_reference_llm(reference)
-
-        if llm_classification is None:
-            # LLM determined this is invalid/unclassifiable
-            print(f"⏭️  SKIPPED (LLM classified as invalid): {reference_num}/{total_refs}")
-            return {
-                "status": "skipped",
-                "reference": reference[:100],
-                "reason": "LLM classified as invalid or unresolvable",
-                "path_used": "agent",
-                "confidence": 0.0
-            }
-
-        id_val = llm_classification.get('identifier_value') or ''
-        print(f"🤖 LLM classified: {llm_classification['source_type']} "
-              f"({llm_classification['identifier_type']}: {id_val[:50]})")
-
-        # Route through the SAME deterministic processing as the fast path
-        det_result = process_reference_deterministic(
-            reference, llm_classification, origin, output_dir
-        )
-
-        if det_result is not None:
-            print(f"✅ SUCCESS (LLM + deterministic): {reference_num}/{total_refs}")
-            det_result["path_used"] = "agent"
-            det_result["confidence"] = llm_classification["confidence"]
-            det_result["reference"] = reference[:100]
-            return det_result
-        else:
-            print(f"❌ FAILED (processing failed after LLM classification): {reference_num}/{total_refs}")
-            return {
-                "status": "failed",
-                "reference": reference[:100],
-                "reason": "Processing failed after LLM classification",
-                "path_used": "agent",
-                "confidence": llm_classification["confidence"]
-            }
-
-    except Exception as e:
-        print(f"❌ Error processing reference: {str(e)}")
-        if verbose:
-            print(f"Traceback:\n{traceback.format_exc()}")
-        return {
-            "status": "failed",
-            "reason": f"exception: {str(e)}",
-            "reference": reference[:100],
-            "path_used": "agent",
-            "confidence": 0.0
-        }
 
 
 def run_agent(
@@ -267,35 +155,212 @@ def run_agent(
         "results": []
     }
     
-    # Process each reference
-    for i, ref in enumerate(refs, 1):
-        result = process_single_reference(
-            reference=ref,
-            reference_num=i,
-            total_refs=total_refs,
-            origin=origin,
-            output_dir=output_dir,
-            verbose=verbose
-        )
-        
-        # Track path usage
-        if result.get("path_used") == "deterministic":
+    # ================================================================
+    # Phase 1: Fast path classification
+    # ================================================================
+    print(f"\n{'='*80}")
+    print(f"PHASE 1: Fast Path Classification")
+    print(f"{'='*80}\n")
+
+    fast_results = {}  # {index: classification_dict}
+    needs_llm = []     # [(index, ref_text)]
+
+    for i, ref in enumerate(refs):
+        if HYBRID_MODE_ENABLED:
+            fast_result = classify_reference_fast(ref)
+
+            if fast_result["is_obvious"] and fast_result["confidence"] >= CONFIDENCE_THRESHOLD:
+                fast_results[i] = fast_result
+                print(f"  🚀 [{i+1}/{total_refs}] Fast path: {fast_result['source_type']} "
+                      f"({fast_result['confidence']:.2f})")
+            else:
+                needs_llm.append((i, ref))
+                print(f"  ⏸  [{i+1}/{total_refs}] Needs LLM: {fast_result['reason']}")
+        else:
+            needs_llm.append((i, ref))
+
+    print(f"\n📊 Fast path: {len(fast_results)}/{total_refs}, "
+          f"Need LLM: {len(needs_llm)}/{total_refs}")
+
+    # ================================================================
+    # Phase 2: Batch LLM classification
+    # ================================================================
+    llm_results = {}  # {index: classification_dict_or_None}
+
+    if needs_llm:
+        print(f"\n{'='*80}")
+        print(f"PHASE 2: Batch LLM Classification (batch size: {BATCH_SIZE})")
+        print(f"{'='*80}\n")
+
+        total_batches = (len(needs_llm) + BATCH_SIZE - 1) // BATCH_SIZE
+
+        for batch_start in range(0, len(needs_llm), BATCH_SIZE):
+            batch_items = needs_llm[batch_start:batch_start + BATCH_SIZE]
+            batch_indices = [idx for idx, _ in batch_items]
+            batch_refs = [ref for _, ref in batch_items]
+            batch_num = (batch_start // BATCH_SIZE) + 1
+
+            print(f"  🤖 Batch {batch_num}/{total_batches} "
+                  f"({len(batch_refs)} references)...")
+
+            batch_classifications = classify_references_batch_llm(batch_refs)
+
+            for local_idx, global_idx in enumerate(batch_indices):
+                ref = batch_refs[local_idx]
+                classification = batch_classifications.get(local_idx)
+
+                if classification is not None:
+                    llm_results[global_idx] = classification
+                    print(f"    ✓ [{global_idx+1}] {classification['source_type']}")
+                else:
+                    # Fallback to single LLM call
+                    print(f"    ⚠️  [{global_idx+1}] Batch miss, single LLM fallback...")
+                    fallback = classify_reference_llm(ref)
+                    llm_results[global_idx] = fallback  # may be None (invalid)
+                    if fallback is not None:
+                        print(f"    ✓ [{global_idx+1}] {fallback['source_type']} (fallback)")
+                    else:
+                        print(f"    ⏭️  [{global_idx+1}] Invalid (LLM)")
+
+        classified = sum(1 for v in llm_results.values() if v is not None)
+        print(f"\n📊 Batch LLM: {classified}/{len(needs_llm)} classified, "
+              f"{len(needs_llm) - classified} invalid")
+
+    # ================================================================
+    # Phase 2.5: Batch minimal metadata for Unresolvable/Other
+    # ================================================================
+    # Collect references that are already known to need minimal metadata
+    # extraction (classified as Unresolvable or Other). These always call
+    # _extract_minimal_metadata in process_reference_deterministic, so
+    # batching them here avoids N individual LLM calls.
+    pre_extracted = {}  # {global_index: metadata_dict}
+
+    unresolvable_refs = []  # [(global_index, ref_text)]
+    all_classifications = {**fast_results, **llm_results}
+    for i, ref in enumerate(refs):
+        cls = all_classifications.get(i)
+        if cls and cls.get("source_type") in ("Unresolvable", "Other"):
+            unresolvable_refs.append((i, ref))
+
+    if unresolvable_refs:
+        print(f"\n{'='*80}")
+        print(f"PHASE 2.5: Batch Minimal Metadata Extraction "
+              f"({len(unresolvable_refs)} references)")
+        print(f"{'='*80}\n")
+
+        for batch_start in range(0, len(unresolvable_refs), BATCH_SIZE):
+            batch_items = unresolvable_refs[batch_start:batch_start + BATCH_SIZE]
+            batch_indices = [idx for idx, _ in batch_items]
+            batch_citations = [ref for _, ref in batch_items]
+
+            batch_extractions = extract_minimal_metadata_batch(batch_citations)
+
+            for local_idx, global_idx in enumerate(batch_indices):
+                extraction = batch_extractions.get(local_idx)
+                if extraction is not None:
+                    pre_extracted[global_idx] = extraction
+                    title = extraction.get("title", "?")[:50]
+                    print(f"  ✓ [{global_idx+1}] {title}")
+                else:
+                    print(f"  ⚠️  [{global_idx+1}] Batch miss (will fallback)")
+
+        extracted_count = len(pre_extracted)
+        print(f"\n📊 Pre-extracted: {extracted_count}/{len(unresolvable_refs)}")
+
+    # ================================================================
+    # Phase 3: Deterministic processing
+    # ================================================================
+    print(f"\n{'='*80}")
+    print(f"PHASE 3: Deterministic Processing")
+    print(f"{'='*80}")
+
+    for i, ref in enumerate(refs):
+        ref_num = i + 1
+        print(f"\n{'='*80}")
+        print(f"Processing reference {ref_num}/{total_refs}")
+        print(f"{'='*80}")
+        print(f"Reference: {ref[:200]}..." if len(ref) > 200 else f"Reference: {ref}")
+
+        if i in fast_results:
+            classification = fast_results[i]
+            path_used = "deterministic"
+            print(f"🚀 FAST PATH: {classification['reason']} "
+                  f"(confidence: {classification['confidence']:.2f})")
+            print(f"   Type: {classification['source_type']}, "
+                  f"ID: {classification['identifier_type']}")
+        else:
+            classification = llm_results.get(i)
+            path_used = "agent"
+
+            if classification is None:
+                print(f"⏭️  SKIPPED (LLM classified as invalid): {ref_num}/{total_refs}")
+                stats["agent_path"] += 1
+                stats["skipped"] += 1
+                stats["results"].append({
+                    "status": "skipped",
+                    "reference": ref[:100],
+                    "reason": "LLM classified as invalid or unresolvable",
+                    "path_used": "agent",
+                    "confidence": 0.0,
+                })
+                continue
+
+            id_val = classification.get("identifier_value") or ""
+            print(f"🤖 LLM classified: {classification['source_type']} "
+                  f"({classification['identifier_type']}: {id_val[:50]})")
+
+        try:
+            det_result = process_reference_deterministic(
+                ref, classification, origin, output_dir,
+                pre_extracted_metadata=pre_extracted.get(i),
+            )
+
+            if det_result is not None:
+                det_result["path_used"] = path_used
+                det_result["confidence"] = classification["confidence"]
+                det_result["reference"] = ref[:100]
+                if det_result.get("status") == "uncertain":
+                    orig = det_result.get("original_source_type", "?")
+                    reason = det_result.get("note", "")
+                    print(f"⚠️  DEGRADED ({orig} → Unresolvable, {path_used}): "
+                          f"{ref_num}/{total_refs} — {reason}")
+                else:
+                    print(f"✅ SUCCESS ({path_used}): {ref_num}/{total_refs}")
+                stats["success"] += 1
+            else:
+                print(f"❌ FAILED (processing failed): {ref_num}/{total_refs}")
+                det_result = {
+                    "status": "failed",
+                    "reference": ref[:100],
+                    "reason": "Processing failed after classification",
+                    "path_used": path_used,
+                    "confidence": classification["confidence"],
+                }
+                stats["failed"] += 1
+
+        except Exception as e:
+            print(f"❌ Error processing reference: {str(e)}")
+            if verbose:
+                print(f"Traceback:\n{traceback.format_exc()}")
+            det_result = {
+                "status": "failed",
+                "reason": f"exception: {str(e)}",
+                "reference": ref[:100],
+                "path_used": path_used,
+                "confidence": classification["confidence"],
+            }
+            stats["failed"] += 1
+
+        if path_used == "deterministic":
             stats["fast_path"] += 1
         else:
             stats["agent_path"] += 1
-        
-        # Track outcomes
-        status = result.get("status", "unknown")
-        if status == "success":
-            stats["success"] += 1
-        elif status == "skipped":
-            stats["skipped"] += 1
-        elif status == "uncertain":
+
+        status = det_result.get("status", "unknown")
+        if status == "uncertain":
             stats["uncertain"] += 1
-        else:
-            stats["failed"] += 1
-        
-        stats["results"].append(result)
+
+        stats["results"].append(det_result)
     
     # Print final statistics
     print(f"\n{'='*80}")
@@ -346,28 +411,141 @@ def run_agent(
     return stats
 
 
+def run_agent_from_mapping(
+    mapping_file: str,
+    output_dir: str,
+    verbose: bool = False,
+) -> Dict[str, Any]:
+    """
+    Run the research extractor agent on multiple files using a mapping file.
+
+    The mapping file is a JSON file where each key is a filename (relative to
+    the mapping file's directory) and each value is the origin string
+    (e.g., "[[Atomic Habits (book)]]").
+
+    Args:
+        mapping_file: Path to JSON mapping file
+        output_dir: Directory for saving markdown files
+        verbose: If True, print detailed agent reasoning
+
+    Returns:
+        Aggregate summary with per-file results
+    """
+    import json
+    from pathlib import Path
+
+    mapping_path = Path(mapping_file)
+    mapping_dir = mapping_path.parent
+
+    with open(mapping_path, "r", encoding="utf-8") as f:
+        mapping = json.load(f)
+
+    print(f"\n{'#'*80}")
+    print(f"# Batch Processing from Mapping File")
+    print(f"# {len(mapping)} files to process")
+    print(f"{'#'*80}\n")
+
+    aggregate = {
+        "total_files": len(mapping),
+        "files_success": 0,
+        "files_failed": 0,
+        "total_refs": 0,
+        "total_success": 0,
+        "total_skipped": 0,
+        "total_failed": 0,
+        "per_file": [],
+    }
+
+    for i, (filename, origin) in enumerate(mapping.items(), 1):
+        input_path = mapping_dir / filename
+        print(f"\n{'*'*80}")
+        print(f"* File {i}/{len(mapping)}: {filename}")
+        print(f"* Origin: {origin}")
+        print(f"{'*'*80}")
+
+        if not input_path.exists():
+            print(f"  ⚠️  File not found: {input_path}")
+            aggregate["files_failed"] += 1
+            aggregate["per_file"].append({
+                "file": filename,
+                "origin": origin,
+                "error": "File not found",
+            })
+            continue
+
+        result = run_agent(
+            input_file=str(input_path),
+            output_dir=output_dir,
+            origin=origin,
+            verbose=verbose,
+        )
+
+        aggregate["files_success"] += 1
+        aggregate["total_refs"] += result.get("total", 0)
+        aggregate["total_success"] += result.get("success", 0)
+        aggregate["total_skipped"] += result.get("skipped", 0)
+        aggregate["total_failed"] += result.get("failed", 0)
+        aggregate["per_file"].append({
+            "file": filename,
+            "origin": origin,
+            "result": result,
+        })
+
+    print(f"\n{'#'*80}")
+    print(f"# BATCH PROCESSING COMPLETE")
+    print(f"{'#'*80}")
+    print(f"  Files processed: {aggregate['files_success']}/{aggregate['total_files']}")
+    if aggregate["files_failed"] > 0:
+        print(f"  Files not found: {aggregate['files_failed']}")
+    print(f"  Total references: {aggregate['total_refs']}")
+    print(f"  ✅ Success: {aggregate['total_success']}")
+    print(f"  ⏭️  Skipped: {aggregate['total_skipped']}")
+    print(f"  ❌ Failed: {aggregate['total_failed']}")
+    print(f"{'#'*80}\n")
+
+    return aggregate
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Extract research references into Obsidian markdown notes")
-    parser.add_argument("input_file", help="Path to text file containing references")
+    parser.add_argument("input_file", nargs="?", help="Path to text file containing references")
     parser.add_argument("output_dir", help="Directory for saving markdown files")
     parser.add_argument("--origin", default="", help='Source book/document name (e.g., "[[Book Title]]")')
+    parser.add_argument("--mapping-file", help="Path to JSON mapping file (filename -> origin)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed agent reasoning")
     args = parser.parse_args()
 
-    result = run_agent(
-        input_file=args.input_file,
-        output_dir=args.output_dir,
-        origin=args.origin,
-        verbose=args.verbose,
-    )
+    if args.mapping_file:
+        result = run_agent_from_mapping(
+            mapping_file=args.mapping_file,
+            output_dir=args.output_dir,
+            verbose=args.verbose,
+        )
 
-    print(f"\n✨ Final Summary:")
-    if result['total'] > 0:
-        print(f"   Success rate: {result['success']}/{result['total']} "
-              f"({result['success']/result['total']*100:.1f}%)")
+        print(f"\n✨ Final Summary:")
+        print(f"   Files: {result['files_success']}/{result['total_files']}")
+        if result['total_refs'] > 0:
+            print(f"   Success rate: {result['total_success']}/{result['total_refs']} "
+                  f"({result['total_success']/result['total_refs']*100:.1f}%)")
+        else:
+            print(f"   No references found or processed")
+    elif args.input_file:
+        result = run_agent(
+            input_file=args.input_file,
+            output_dir=args.output_dir,
+            origin=args.origin,
+            verbose=args.verbose,
+        )
+
+        print(f"\n✨ Final Summary:")
+        if result['total'] > 0:
+            print(f"   Success rate: {result['success']}/{result['total']} "
+                  f"({result['success']/result['total']*100:.1f}%)")
+        else:
+            print(f"   No references found or processed")
     else:
-        print(f"   No references found or processed")
+        parser.error("Either input_file or --mapping-file is required")
 
 # TODO - add a fallback that if it failed to find the reference based on it's source type, try websearch to learn more about it

@@ -19,8 +19,8 @@ OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 
 # Semantic Scholar Configuration
 SEMANTIC_SCHOLAR_FIELDS = "title,authors,year,abstract,url,tldr"
-SEMANTIC_SCHOLAR_RATE_LIMIT_DELAY = 3  # Base delay between requests (seconds)
-SEMANTIC_SCHOLAR_MAX_RETRIES = 3  # Max retry attempts on rate limit
+SEMANTIC_SCHOLAR_RATE_LIMIT_DELAY = 5  # Base delay for exponential backoff on 429 (seconds)
+SEMANTIC_SCHOLAR_MAX_RETRIES = 4  # Max retry attempts on rate limit (backoff: 5s, 10s, 20s)
 
 # Timeout Settings (seconds)
 FETCH_TIMEOUT = 30
@@ -41,6 +41,7 @@ FOLDER_MAP = {
 HYBRID_MODE_ENABLED = True  # Enable fast deterministic path for obvious references
 CONFIDENCE_THRESHOLD = 0.80  # Minimum confidence to use fast path (0.0-1.0)
 FAST_PATH_STATS = True  # Track and display fast vs agent path usage
+BATCH_SIZE = 12  # References per batch LLM classification call
 
 # NYT Domains
 NYT_DOMAINS = [
@@ -58,7 +59,9 @@ PATTERN_DOUBLE_NEWLINE = r"\n\s*\n"
 PATTERN_NUMBERED_LIST = r"\.\s+\d{1,2}\.\s+"
 
 # Reference identification patterns
-PATTERN_DOI = r'\b(10\.\d{4,}/[^\s]+)'
+# Captures parenthesized DOIs (e.g. 10.1016/s0140-6736(14)61682-2) and
+# stops before trailing punctuation (.,;:) or angle brackets (>)
+PATTERN_DOI = r'\b(10\.\d{4,}/[^\s>]+\w)'
 PATTERN_ARXIV = r'arXiv:\s*(\d{4}\.\d{4,5})'
 PATTERN_CORPUSID = r'(?:CorpusID[:\s]+)?(\d{7,})'
 PATTERN_ISBN = r'ISBN[:\s-]*(\d{10}|\d{13})'

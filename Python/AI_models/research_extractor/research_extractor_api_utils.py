@@ -304,39 +304,49 @@ def _extract_html_metadata(html_content):
 
 
 def make_api_request_with_retry(url, params=None, headers=None, timeout=30, max_retries=3, base_delay=1.5):
-    """Generic API request with exponential backoff retry logic.
-    
+    """API request with exponential backoff retry on rate limits (429) only.
+
+    Non-rate-limit errors (404, 500, connection errors, timeouts) return
+    immediately without retry to avoid wasting time on unrecoverable failures.
+
     Args:
         url: API endpoint URL
         params: Query parameters dict
         headers: HTTP headers dict
         timeout: Request timeout in seconds
-        max_retries: Maximum retry attempts
-        base_delay: Base delay for exponential backoff
-    
+        max_retries: Maximum retry attempts for 429 rate limits
+        base_delay: Base delay for exponential backoff on 429 (seconds)
+
     Returns:
         Response JSON dict or None on failure
     """
     for attempt in range(max_retries):
         try:
-            if attempt > 0 and base_delay > 0:
+            if attempt > 0:
                 wait_time = base_delay * (2 ** (attempt - 1))
+                logger.info("Rate limited by %s, waiting %.1fs (retry %d/%d)",
+                            url, wait_time, attempt + 1, max_retries)
                 time.sleep(wait_time)
 
             r = requests.get(url, params=params, headers=headers, timeout=timeout)
 
-            # Handle rate limit
+            # Rate limit: retry with exponential backoff
             if r.status_code == 429:
                 if attempt < max_retries - 1:
                     continue
+                logger.warning("Rate limit exhausted for %s after %d retries", url, max_retries)
                 return None
 
+            # Any other HTTP error: fail immediately, no retry
             r.raise_for_status()
             return r.json()
+
+        except requests.exceptions.HTTPError as e:
+            logger.warning("HTTP error for %s: %s", url, e)
+            return None
         except Exception as e:
-            logger.warning("API request to %s failed (attempt %d/%d): %s", url, attempt + 1, max_retries, e)
-            if attempt == max_retries - 1:
-                return None
+            logger.warning("Request failed for %s: %s", url, e)
+            return None
 
     return None
 
