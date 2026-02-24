@@ -8,8 +8,9 @@ Hybrid processing approach:
 Both paths use a single fetch/generate/save pipeline, eliminating behavioral drift.
 """
 
+import re
 import traceback
-from typing import Dict, Any
+from typing import Dict, Any, Set
 from dotenv import load_dotenv
 
 load_dotenv()  # Load env vars before importing modules that read them at import time
@@ -19,6 +20,7 @@ from research_extractor_tools import (
     classify_reference_llm,
     classify_references_batch_llm,
     extract_minimal_metadata_batch,
+    extract_identifiers_from_text,
     process_reference_deterministic,
     parse_references_from_text,
     screen_file_content,
@@ -28,6 +30,8 @@ from research_extractor_constants import (
     CONFIDENCE_THRESHOLD,
     FAST_PATH_STATS,
     BATCH_SIZE,
+    PATTERN_DOI,
+    PATTERN_ARXIV,
 )
 
 
@@ -152,9 +156,85 @@ def run_agent(
         "skipped": 0,
         "failed": 0,
         "uncertain": 0,
+        "Unresolvable": 0,
+        "pre_extracted_total": 0,
+        "pre_extracted_success": 0,
+        "pre_extracted_failed": 0,
+        "pre_extracted_skipped": 0,
         "results": []
     }
     
+    # ================================================================
+    # Phase 0: Document-level identifier pre-extraction
+    # ================================================================
+    identifiers = extract_identifiers_from_text(text)
+    processed_ids: Set[str] = set()
+    pre_extracted_refs: Set[int] = set()  # ref indices to skip in Phase 1-3
+
+    if identifiers:
+        stats["pre_extracted_total"] = len(identifiers)
+        print(f"\n{'='*80}")
+        print(f"PHASE 0: Document-Level Identifier Pre-Extraction")
+        print(f"{'='*80}")
+        print(f"Found {len(identifiers)} unique identifiers (DOI/arXiv)\n")
+
+        for idx, ident in enumerate(identifiers):
+            id_num = idx + 1
+            id_type = ident["identifier_type"]
+            id_value = ident["identifier_value"]
+
+            classification = {
+                "is_obvious": True,
+                "confidence": 0.95,
+                "source_type": ident["source_type"],
+                "identifier_type": id_type,
+                "identifier_value": id_value,
+                "url": None,
+                "reason": "Document-level pre-extraction",
+            }
+
+            try:
+                result = process_reference_deterministic(
+                    id_value, classification, origin, output_dir,
+                )
+
+                if result is not None:
+                    processed_ids.add(id_value)
+                    stats["pre_extracted_success"] += 1
+                    if result.get("status") == "uncertain":
+                        print(f"  ⚠️  [{id_num}/{len(identifiers)}] "
+                              f"DEGRADED ({id_type}: {id_value[:50]})")
+                    else:
+                        print(f"  ✅ [{id_num}/{len(identifiers)}] "
+                              f"{id_type}: {id_value[:50]}")
+                    stats["results"].append(result)
+                else:
+                    stats["pre_extracted_failed"] += 1
+                    print(f"  ❌ [{id_num}/{len(identifiers)}] "
+                          f"FAILED ({id_type}: {id_value[:50]})")
+                    stats["results"].append({
+                        "status": "failed",
+                        "reference": id_value,
+                        "reason": "Pre-extraction processing failed",
+                        "path_used": "pre-extraction",
+                        "confidence": 0.95,
+                    })
+            except Exception as e:
+                stats["pre_extracted_failed"] += 1
+                print(f"  ❌ [{id_num}/{len(identifiers)}] ERROR: {str(e)}")
+                stats["results"].append({
+                    "status": "failed",
+                    "reference": id_value,
+                    "reason": f"Pre-extraction exception: {str(e)}",
+                    "path_used": "pre-extraction",
+                    "confidence": 0.95,
+                })
+
+        print(f"\n📊 Pre-extracted: {stats['pre_extracted_success']}/{len(identifiers)} "
+              f"success, {stats['pre_extracted_failed']}/{len(identifiers)} failed")
+    else:
+        print(f"\n📋 No document-level identifiers found (DOI/arXiv)")
+
     # ================================================================
     # Phase 1: Fast path classification
     # ================================================================
@@ -166,6 +246,22 @@ def run_agent(
     needs_llm = []     # [(index, ref_text)]
 
     for i, ref in enumerate(refs):
+        # Dedup: skip references whose identifier was already pre-extracted
+        if processed_ids:
+            doi_match = re.search(PATTERN_DOI, ref)
+            arxiv_match = re.search(PATTERN_ARXIV, ref, re.IGNORECASE)
+            matched_id = None
+            if doi_match and doi_match.group(1) in processed_ids:
+                matched_id = doi_match.group(1)
+            elif arxiv_match and f"arXiv:{arxiv_match.group(1)}" in processed_ids:
+                matched_id = f"arXiv:{arxiv_match.group(1)}"
+            if matched_id:
+                pre_extracted_refs.add(i)
+                stats["pre_extracted_skipped"] += 1
+                print(f"  ⏭️  [{i+1}/{total_refs}] Already pre-extracted "
+                      f"({matched_id[:50]})")
+                continue
+
         if HYBRID_MODE_ENABLED:
             fast_result = classify_reference_fast(ref)
 
@@ -180,7 +276,8 @@ def run_agent(
             needs_llm.append((i, ref))
 
     print(f"\n📊 Fast path: {len(fast_results)}/{total_refs}, "
-          f"Need LLM: {len(needs_llm)}/{total_refs}")
+          f"Need LLM: {len(needs_llm)}/{total_refs}, "
+          f"Pre-extracted: {len(pre_extracted_refs)}/{total_refs}")
 
     # ================================================================
     # Phase 2: Batch LLM classification
@@ -234,6 +331,7 @@ def run_agent(
     # _extract_minimal_metadata in process_reference_deterministic, so
     # batching them here avoids N individual LLM calls.
     pre_extracted = {}  # {global_index: metadata_dict}
+    unresolvable_indices: Set[int] = set()  # Track indices with Unresolvable classification
 
     unresolvable_refs = []  # [(global_index, ref_text)]
     all_classifications = {**fast_results, **llm_results}
@@ -241,6 +339,7 @@ def run_agent(
         cls = all_classifications.get(i)
         if cls and cls.get("source_type") in ("Unresolvable", "Other"):
             unresolvable_refs.append((i, ref))
+            unresolvable_indices.add(i)
 
     if unresolvable_refs:
         print(f"\n{'='*80}")
@@ -275,6 +374,10 @@ def run_agent(
     print(f"{'='*80}")
 
     for i, ref in enumerate(refs):
+        # Skip references already handled by Phase 0 pre-extraction
+        if i in pre_extracted_refs:
+            continue
+
         ref_num = i + 1
         print(f"\n{'='*80}")
         print(f"Processing reference {ref_num}/{total_refs}")
@@ -356,9 +459,13 @@ def run_agent(
         else:
             stats["agent_path"] += 1
 
-        status = det_result.get("status", "unknown")
-        if status == "uncertain":
-            stats["uncertain"] += 1
+        # Count Unresolvable references separately
+        if i in unresolvable_indices:
+            stats["Unresolvable"] += 1
+        else:
+            status = det_result.get("status", "unknown")
+            if status == "uncertain":
+                stats["uncertain"] += 1
 
         stats["results"].append(det_result)
     
@@ -367,45 +474,60 @@ def run_agent(
     print(f"PROCESSING COMPLETE")
     print(f"{'='*80}")
 
-    if stats['total'] == 0:
+    # Pre-extraction summary
+    pre_total = stats['pre_extracted_total']
+    if pre_total > 0:
+        print(f"\n📋 PHASE 0 — DOCUMENT-LEVEL PRE-EXTRACTION:")
+        print(f"  Unique identifiers found: {pre_total}")
+        print(f"  ✅ Success: {stats['pre_extracted_success']}/{pre_total}")
+        print(f"  ❌ Failed: {stats['pre_extracted_failed']}/{pre_total}")
+        print(f"  References skipped (dedup): {stats['pre_extracted_skipped']}")
+
+    # Reference pipeline summary
+    ref_processed = stats['total'] - stats['pre_extracted_skipped']
+
+    if stats['total'] == 0 and pre_total == 0:
         print(f"\n📈 No valid references to process (all {stats['total_raw']} entries were pre-filtered).")
         print(f"{'='*80}\n")
         return stats
 
-    if FAST_PATH_STATS:
-        print(f"\n📊 HYBRID MODE STATISTICS:")
-        print(f"  Fast Path (deterministic): {stats['fast_path']}/{stats['total']} " +
-              f"({stats['fast_path']/stats['total']*100:.1f}%)")
-        print(f"  Agent Path (LLM analysis): {stats['agent_path']}/{stats['total']} " +
-              f"({stats['agent_path']/stats['total']*100:.1f}%)")
-        print(f"\n📈 OUTCOME STATISTICS:")
-    else:
-        print(f"\n📈 STATISTICS:")
-    
-    print(f"  Total raw entries: {stats['total_raw']}")
-    print(f"  Pre-filtered non-citations: {stats['prefiltered']}")
-    if stats['split_compounds'] > 0:
-        print(f"  Compound references split: {stats['split_compounds']}")
-    print(f"  Valid references processed: {stats['total']}")
-    print(f"  ✅ Success: {stats['success']}/{stats['total']} ({stats['success']/stats['total']*100:.1f}%)")
-    print(f"  ⏭️  Skipped: {stats['skipped']}/{stats['total']} ({stats['skipped']/stats['total']*100:.1f}%)")
-    print(f"  ❌ Failed: {stats['failed']}/{stats['total']} ({stats['failed']/stats['total']*100:.1f}%)")
-    if stats['uncertain'] > 0:
-        print(f"  ⚠️  Uncertain: {stats['uncertain']}/{stats['total']} ({stats['uncertain']/stats['total']*100:.1f}%)")
-    
+    if ref_processed > 0:
+        if FAST_PATH_STATS:
+            print(f"\n📊 HYBRID MODE STATISTICS (reference pipeline):")
+            print(f"  Fast Path (deterministic): {stats['fast_path']}/{ref_processed} " +
+                  f"({stats['fast_path']/ref_processed*100:.1f}%)")
+            print(f"  Agent Path (LLM analysis): {stats['agent_path']}/{ref_processed} " +
+                  f"({stats['agent_path']/ref_processed*100:.1f}%)")
+
+        print(f"\n📈 REFERENCE PIPELINE STATISTICS:")
+        print(f"  Total raw entries: {stats['total_raw']}")
+        print(f"  Pre-filtered non-citations: {stats['prefiltered']}")
+        if stats['split_compounds'] > 0:
+            print(f"  Compound references split: {stats['split_compounds']}")
+        print(f"  Valid references processed: {ref_processed}"
+              f" (of {stats['total']} total, {stats['pre_extracted_skipped']} skipped via pre-extraction)")
+        print(f"  ✅ Success: {stats['success']}/{ref_processed} ({stats['success']/ref_processed*100:.1f}%)")
+        print(f"  ⏭️  Skipped: {stats['skipped']}/{ref_processed} ({stats['skipped']/ref_processed*100:.1f}%)")
+        print(f"  ❌ Failed: {stats['failed']}/{ref_processed} ({stats['failed']/ref_processed*100:.1f}%)")
+        if stats['uncertain'] > 0:
+            print(f"  ⚠️  Uncertain: {stats['uncertain']}/{ref_processed} ({stats['uncertain']/ref_processed*100:.1f}%)")
+        if stats['Unresolvable'] > 0:
+            print(f"  📄 Unresolvable: {stats['Unresolvable']}/{ref_processed} ({stats['Unresolvable']/ref_processed*100:.1f}%)")
+
     # Print details of skipped/failed
     if stats['skipped'] > 0:
         print(f"\n📋 Skipped References:")
         for r in stats['results']:
             if r["status"] == "skipped":
                 print(f"  - {r['reference']}... (Reason: {r.get('reason', 'unknown')})")
-    
-    if stats['failed'] > 0:
+
+    failed_count = stats['failed'] + stats['pre_extracted_failed']
+    if failed_count > 0:
         print(f"\n🚨 Failed References:")
         for r in stats['results']:
             if r["status"] == "failed":
-                print(f"  - {r['reference']}... (Reason: {r.get('reason', 'unknown')})")
-    
+                print(f"  - {r['reference'][:80]}... (Reason: {r.get('reason', 'unknown')})")
+
     print(f"{'='*80}\n")
     
     return stats

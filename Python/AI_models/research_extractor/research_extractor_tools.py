@@ -658,6 +658,46 @@ def parse_references_from_text(text: str) -> Dict[str, Any]:
     }
 
 
+def extract_identifiers_from_text(text: str) -> List[Dict[str, str]]:
+    """Extract all unique DOI and arXiv identifiers from raw text.
+
+    Scans the entire document for identifier patterns regardless of
+    reference splitting. Returns deduplicated list ordered by first
+    appearance in the text.
+
+    Args:
+        text: Full document text
+
+    Returns:
+        List of dicts with identifier_type, identifier_value, source_type
+    """
+    identifiers = []
+    seen: set = set()
+
+    for match in re.finditer(PATTERN_DOI, text):
+        doi = match.group(1)
+        if doi not in seen:
+            seen.add(doi)
+            identifiers.append({
+                "identifier_type": "DOI",
+                "identifier_value": doi,
+                "source_type": "Research Paper",
+            })
+
+    for match in re.finditer(PATTERN_ARXIV, text, re.IGNORECASE):
+        arxiv_id = match.group(1)
+        key = f"arXiv:{arxiv_id}"
+        if key not in seen:
+            seen.add(key)
+            identifiers.append({
+                "identifier_type": "ArXiv",
+                "identifier_value": key,
+                "source_type": "Research Paper",
+            })
+
+    return identifiers
+
+
 @tool
 def parse_references_file(file_path: str) -> Dict[str, Any]:
     """Load and parse references from text file. Splits by double newlines or numbered lists.
