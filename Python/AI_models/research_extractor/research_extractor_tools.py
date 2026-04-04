@@ -22,6 +22,7 @@ from research_extractor_api_utils import (
     fetch_semantic_scholar_metadata,
     fetch_openalex_metadata,
     fetch_google_books_metadata,
+    clean_identifier,
 )
 from research_extractor_prompts import (
     get_analyze_reference_prompt,
@@ -299,7 +300,7 @@ def _extract_origin_from_file(file_path: str) -> list:
 def _build_markdown_content(metadata: Dict, note: Dict, source_type: str, origin: Any) -> str:
     """Shared markdown content builder."""
     authors = "\n".join(f"  - [[{a}]]" for a in metadata.get("authors", [DEFAULT_AUTHOR]))
-    topics = "\n".join(f"  - [[{t} (MOC)]]" for t in note.get("topics", [])[:3])
+    topics = "\n".join(f"  - [[{t} (Map)]]" for t in note.get("topics", [])[:3])
     body = "\n\n".join(f"## {k}\n\n{v}" for k, v in note.get("body_sections", {}).items())
     timestamps = get_timestamp_metadata()
     
@@ -675,7 +676,7 @@ def extract_identifiers_from_text(text: str) -> List[Dict[str, str]]:
     seen: set = set()
 
     for match in re.finditer(PATTERN_DOI, text):
-        doi = match.group(1)
+        doi = clean_identifier(match.group(1))
         if doi not in seen:
             seen.add(doi)
             identifiers.append({
@@ -1063,8 +1064,9 @@ def _try_doi_pattern(reference: str) -> Optional[Dict[str, Any]]:
     """Try to match DOI pattern."""
     match = re.search(PATTERN_DOI, reference)
     if match:
+        doi = clean_identifier(match.group(1))
         return _make_classification(
-            "Research Paper", "DOI", match.group(1), 0.95, "Clear DOI pattern"
+            "Research Paper", "DOI", doi, 0.95, "Clear DOI pattern"
         )
     return None
 
@@ -1073,8 +1075,9 @@ def _try_arxiv_pattern(reference: str) -> Optional[Dict[str, Any]]:
     """Try to match arXiv ID pattern."""
     match = re.search(PATTERN_ARXIV, reference, re.IGNORECASE)
     if match:
+        arxiv_id = clean_identifier(match.group(1))
         return _make_classification(
-            "Research Paper", "ArXiv", f"arXiv:{match.group(1)}", 0.95, "Clear ArXiv ID"
+            "Research Paper", "ArXiv", f"arXiv:{arxiv_id}", 0.95, "Clear ArXiv ID"
         )
     return None
 
@@ -1084,8 +1087,9 @@ def _try_corpus_id_pattern(reference: str) -> Optional[Dict[str, Any]]:
     if "semanticscholar.org" in reference.lower() or "corpusid" in reference.lower():
         match = re.search(PATTERN_CORPUSID, reference)
         if match:
+            corpus_id = clean_identifier(match.group(1))
             return _make_classification(
-                "Research Paper", "CorpusID", match.group(1), 0.90, "Clear CorpusID"
+                "Research Paper", "CorpusID", corpus_id, 0.90, "Clear CorpusID"
             )
     return None
 

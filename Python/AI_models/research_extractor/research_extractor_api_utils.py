@@ -337,12 +337,18 @@ def make_api_request_with_retry(url, params=None, headers=None, timeout=30, max_
                 logger.warning("Rate limit exhausted for %s after %d retries", url, max_retries)
                 return None
 
-            # Any other HTTP error: fail immediately, no retry
+            # 403/404: Not found or forbidden (common for DOIs not in database)
+            # Return None to trigger fallback, but don't log as warning
+            if r.status_code in (403, 404):
+                logger.debug("Not found (%d) for %s", r.status_code, url)
+                return None
+
+            # Other HTTP errors: fail immediately, no retry
             r.raise_for_status()
             return r.json()
 
         except requests.exceptions.HTTPError as e:
-            logger.warning("HTTP error for %s: %s", url, e)
+            logger.debug("HTTP error for %s: %s", url, e)
             return None
         except Exception as e:
             logger.warning("Request failed for %s: %s", url, e)
@@ -407,8 +413,33 @@ def normalize_paper_metadata(data, source, id_type=None):
         return None
 
 
+def clean_identifier(identifier: str) -> str:
+    """Remove invisible Unicode characters (zero-width spaces, etc.) from identifiers.
+
+    This prevents 403 errors from APIs when identifiers copied from PDFs or web
+    sources contain hidden characters like zero-width spaces (U+200B).
+
+    Args:
+        identifier: The raw identifier string (DOI, arXiv ID, etc.)
+
+    Returns:
+        Cleaned identifier with invisible characters removed
+    """
+    import unicodedata
+
+    # Remove zero-width spaces and other invisible/control characters
+    cleaned = ''.join(
+        char for char in identifier
+        if unicodedata.category(char)[0] != 'C' or char in '\n\t\r'
+    )
+    return cleaned.strip()
+
+
 def fetch_semantic_scholar_metadata(id_type, id_value):
     """Fetch paper metadata from Semantic Scholar."""
+    # Clean invisible characters from identifier
+    id_value = clean_identifier(id_value)
+
     if id_type in ["DOI", "CorpusID", "ArXiv"]:
         paper_id = f"{id_type if id_type != 'ArXiv' else 'ARXIV'}:{id_value}"
         url = f"{SEMANTIC_SCHOLAR_API_URL.replace('/search', '')}/{paper_id}"
@@ -437,6 +468,9 @@ def fetch_semantic_scholar_metadata(id_type, id_value):
 
 def fetch_openalex_metadata(id_type, id_value):
     """Fetch paper metadata from OpenAlex."""
+    # Clean invisible characters from identifier
+    id_value = clean_identifier(id_value)
+
     if id_type == "DOI":
         url = f"{OPENALEX_API_URL}/doi:{id_value}"
     else:

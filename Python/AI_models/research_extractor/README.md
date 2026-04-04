@@ -126,7 +126,7 @@ output/
 Each file includes:
 - YAML frontmatter with metadata (UUID, timestamps, authors, topics, tags)
 - Structured sections (Hypothesis, Methodology, Main Findings, etc.)
-- Obsidian-compatible links (`[[Author]]`, `[[Topic (MOC)]]`)
+- Obsidian-compatible links (`[[Author]]`, `[[Topic (Map)]]`)
 
 **Reading Lists:**
 Books are saved to `Misc/<origin> (reading material).md` with:
