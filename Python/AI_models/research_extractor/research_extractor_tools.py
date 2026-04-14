@@ -260,6 +260,108 @@ def get_timestamp_metadata() -> Dict[str, str]:
     }
 
 
+def _validate_filename_with_gemini(filename: str, metadata: Dict) -> tuple[bool, str, Optional[str]]:
+    """Validate filename quality using Gemini API via OpenRouter and suggest improvements.
+
+    Checks if filename is:
+    - In English
+    - Short and concise
+    - Descriptive
+    - Free of unrelated numbers
+    - Free of file type prefixes ([PDF], [EPUB], etc.)
+
+    Args:
+        filename: The filename to validate (without .md extension)
+        metadata: Document metadata (title, authors, year, abstract) for context
+
+    Returns:
+        (is_valid: bool, reason: str, suggested_filename: Optional[str])
+        - is_valid: True if filename passes validation
+        - reason: Explanation of validation result
+        - suggested_filename: Better filename if invalid, None otherwise
+    """
+    try:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            # Graceful fallback if API key not available
+            return True, "Skipped validation (no API key)", None
+
+        # Build context from metadata for better suggestions
+        title = metadata.get("title", "")
+        authors = metadata.get("authors", [])
+        year = metadata.get("year", "")
+        abstract = metadata.get("abstract", "")[:300]  # First 300 chars of abstract
+
+        context = f"""Title: {title}
+Authors: {', '.join(authors) if authors else 'Unknown'}
+Year: {year if year else 'Unknown'}
+Abstract: {abstract}"""
+
+        validation_prompt = f"""You are a filename validator for academic/reference documents.
+
+CURRENT FILENAME: "{filename}"
+
+DOCUMENT CONTEXT:
+{context}
+
+TASK: Validate the filename and suggest a better one if needed.
+
+CRITERIA:
+1. Must be in English
+2. Should be reasonably short (ideally under 80 characters)
+3. Must be descriptive and meaningful for the document
+4. Must avoid unrelated numbers or random digits
+5. Must avoid file type prefixes like [PDF], [EPUB], [DOC], etc.
+
+RESPONSE FORMAT:
+If the filename is valid, respond: "VALID: [brief explanation]"
+If invalid, respond: "INVALID: [reason] | SUGGEST: [better_filename]"
+
+Generate filenames in the format: "Title Words (reference)" - concise, meaningful, and lowercase keywords."""
+
+        client = OpenAI(
+            api_key=api_key,
+            base_url=OPENROUTER_API_BASE,
+            default_headers={"HTTP-Referer": "research-extractor", "X-Title": "research-extractor"}
+        )
+
+        response = client.chat.completions.create(
+            model="google/gemini-2.5-flash-lite",
+            messages=[
+                {"role": "user", "content": validation_prompt}
+            ],
+            temperature=0,
+            max_tokens=200,
+        )
+
+        result = response.choices[0].message.content.strip()
+
+        if result.startswith("VALID"):
+            reason = result.replace("VALID:", "").strip()
+            return True, reason, None
+        elif result.startswith("INVALID"):
+            # Parse format: "INVALID: [reason] | SUGGEST: [filename]"
+            parts = result.split("|")
+            reason = parts[0].replace("INVALID:", "").strip() if len(parts) > 0 else "Invalid filename"
+            suggested = None
+            if len(parts) > 1 and "SUGGEST:" in parts[1]:
+                suggested = parts[1].split("SUGGEST:")[1].strip()
+                # Clean up the suggested filename
+                suggested = suggested.replace('"', '').strip()
+                if suggested:
+                    suggested = suggested[:200]  # Keep reasonable length
+            return False, reason, suggested
+        else:
+            # Unexpected response format, treat as valid to avoid blocking
+            return True, "Validation inconclusive (treating as valid)", None
+
+    except Exception as e:
+        # Graceful fallback on any error
+        import logging
+        logging.debug(f"Filename validation failed: {str(e)}, treating as valid")
+        return True, f"Validation skipped ({type(e).__name__})", None
+
+
 def _generate_filename(metadata: Dict) -> str:
     """Generate standardized filename: 'Title (reference)'."""
     title = metadata.get("title", DEFAULT_TITLE)
@@ -832,6 +934,18 @@ def _save_markdown_core(metadata: Dict, note: Dict, source_type: str, origin: st
     try:
         folder = FOLDER_MAP.get(source_type, DEFAULT_OUTPUT_FOLDER)
         filename = _generate_filename(metadata)
+
+        # Validate and potentially rename Articles and Lectures to fix bad filenames
+        if source_type in ("Article", "Lecture"):
+            is_valid, validation_reason, suggested_filename = _validate_filename_with_gemini(filename, metadata)
+
+            if not is_valid and suggested_filename:
+                import logging
+                logging.info(f"Filename validation ({source_type}): {validation_reason}. Using suggested: {suggested_filename}")
+                filename = suggested_filename
+            elif not is_valid:
+                import logging
+                logging.warning(f"Filename validation ({source_type}) failed: {validation_reason}. Using original: {filename}")
 
         # Route Unresolvable to separate directory if configured
         if source_type == "Unresolvable" and unresolvable_dir:
