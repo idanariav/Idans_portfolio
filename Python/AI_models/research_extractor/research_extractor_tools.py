@@ -308,30 +308,30 @@ def _format_topic_wikilink(topic: str, topic_info: Optional[Dict[str, List[str]]
             When None, defaults to (Map) suffix for backward compatibility.
     """
     if topic == "Uncategorized":
-        return f"  - [[Uncategorized]]"
+        return f'  - "[[Uncategorized]]"'
     if topic_info is None:
-        return f"  - [[{topic} (Map)]]"
+        return f'  - "[[{topic} (Map)]]"'
     if topic in topic_info.get("concepts", []):
-        return f"  - [[{topic}]]"
+        return f'  - "[[{topic}]]"'
     # Maps and approved topics get (Map) suffix
-    return f"  - [[{topic} (Map)]]"
+    return f'  - "[[{topic} (Map)]]"'
 
 
 def _build_markdown_content(metadata: Dict, note: Dict, source_type: str, origin: Any,
                             topic_info: Optional[Dict[str, List[str]]] = None) -> str:
     """Shared markdown content builder."""
-    authors = "\n".join(f"  - [[{a}]]" for a in metadata.get("authors", [DEFAULT_AUTHOR]))
+    authors = "\n".join(f'  - "[[{a}]]"' for a in metadata.get("authors", [DEFAULT_AUTHOR]))
     topics = "\n".join(
         _format_topic_wikilink(t, topic_info) for t in note.get("topics", [])[:3]
     )
     body = "\n\n".join(f"## {k}\n\n{v}" for k, v in note.get("body_sections", {}).items())
     timestamps = get_timestamp_metadata()
-    
+
     # Handle origin as either string or list
     if isinstance(origin, list):
-        origin_yaml = "\n".join(f"  - {o}" for o in origin)
+        origin_yaml = "\n".join(f'  - "{o}"' for o in origin)
     else:
-        origin_yaml = f"  - {origin}"
+        origin_yaml = f'  - "{origin}"'
     
     return f"""---
 UUID: {timestamps['uuid']}
@@ -851,7 +851,7 @@ def _save_markdown_core(metadata: Dict, note: Dict, source_type: str, origin: st
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
             # Insert new origin line before the closing ---
-            origin_line = f"  - {origin}"
+            origin_line = f'  - "{origin}"'
             # Find the Origin section and append
             if "Origin:" in content:
                 content = content.replace("\n---\n", f"\n{origin_line}\n---\n", 1)
