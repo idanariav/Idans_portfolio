@@ -2,7 +2,7 @@
 Prompts for the research extractor pipeline and agent.
 """
 
-from typing import List
+from typing import List, Optional
 
 # Agent System Prompt - Optimized for Gemini with function calling
 AGENT_SYSTEM_PROMPT = """You are a metadata extraction specialist converting academic/web references and books into Obsidian markdown notes.
@@ -115,12 +115,13 @@ Return JSON with a classification for each reference keyed by its index:
 {{"classifications": {{"0": {_CLASSIFICATION_JSON_SCHEMA}, "1": {{...}}, ...}}}}"""
 
 
-def get_batch_extract_minimal_metadata_prompt(citations: List[str]) -> str:
+def get_batch_extract_minimal_metadata_prompt(citations: List[str], allowed_topics: Optional[List[str]] = None) -> str:
     """
     Get prompt for batch extracting minimal metadata from multiple unresolvable citations.
 
     Args:
         citations: List of citation text strings
+        allowed_topics: Optional list of allowed topic names. When provided, topics must be selected from this list.
 
     Returns:
         Prompt string for the LLM
@@ -129,9 +130,14 @@ def get_batch_extract_minimal_metadata_prompt(citations: List[str]) -> str:
         f"[{i}] {cit}" for i, cit in enumerate(citations)
     )
 
+    if allowed_topics:
+        topic_instruction = f"1-3 topics selected ONLY from this list: {', '.join(allowed_topics)}. If none fit, use \"Uncategorized\". Do NOT invent new topics."
+    else:
+        topic_instruction = "1-3 broad topic nouns"
+
     return f"""Extract bibliographic data from each of these {len(citations)} citations.
 
-For each citation, extract: author names, year (4-digit), title, venue/publisher, a one-sentence summary, and 1-3 broad topic nouns.
+For each citation, extract: author names, year (4-digit), title, venue/publisher, a one-sentence summary, and {topic_instruction}.
 
 IMPORTANT: ALL values must be strings, never null. Use "Unknown" for missing year, "Untitled Citation" for missing title, "" for missing venue.
 
@@ -142,19 +148,30 @@ Return JSON keyed by index:
 {{"extractions": {{"0": {{"title": "...", "authors": ["..."], "year": "YYYY or Unknown", "publication_venue": "venue or empty string", "summary": "...", "topics": ["..."]}}, "1": {{...}}, ...}}}}"""
 
 
-def get_generate_note_prompt(source_type: str, content: str) -> str:
-    """Get prompt for generating notes from content."""
+def get_generate_note_prompt(source_type: str, content: str, allowed_topics: Optional[List[str]] = None) -> str:
+    """Get prompt for generating notes from content.
+
+    Args:
+        source_type: Type of source (Research Paper, Article, etc.)
+        content: The content to generate notes from
+        allowed_topics: Optional list of allowed topic names. When provided, topics must be selected from this list.
+    """
     if source_type == "Research Paper":
         sections = "Hypothesis|Methodology|Main Findings"
     else:
         sections = "Main Story|Credibility|Main Findings"
+
+    if allowed_topics:
+        topic_instruction = f"Topics: Select 1-3 from ONLY this list: {', '.join(allowed_topics)}. If none fit, use \"Uncategorized\". Do NOT invent new topics."
+    else:
+        topic_instruction = "Topics: 1-3 broad single-noun topics"
 
     return f"""Generate structured notes from this {source_type}.
 
 CONSTRAINTS:
 - Summary: ~50 words, practical findings, clear language
 - Sections: {sections} (max 200 words each)
-- Topics: 1-3 broad single-noun topics
+- {topic_instruction}
 - Use ONLY the content provided
 
 CONTENT:

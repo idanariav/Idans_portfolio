@@ -8,9 +8,10 @@ Hybrid processing approach:
 Both paths use a single fetch/generate/save pipeline, eliminating behavioral drift.
 """
 
+import json
 import re
 import traceback
-from typing import Dict, Any, Set
+from typing import Dict, Any, List, Optional, Set
 from dotenv import load_dotenv
 
 load_dotenv()  # Load env vars before importing modules that read them at import time
@@ -35,28 +36,65 @@ from research_extractor_constants import (
 )
 
 
+def _load_topics_file(topics_file: str) -> tuple:
+    """Load and parse the topics vocabulary file.
+
+    Args:
+        topics_file: Path to JSON file with structure:
+            {"maps": [...], "concepts": [...], "approved": [...]}
+
+    Returns:
+        (allowed_topics, topic_info) where:
+        - allowed_topics: flat deduplicated list of all topic names
+        - topic_info: the original structured dict for formatting
+    """
+    with open(topics_file, "r", encoding="utf-8") as f:
+        topic_info = json.load(f)
+
+    # Build flat deduplicated list for prompt injection
+    all_topics = set()
+    all_topics.update(topic_info.get("maps", []))
+    all_topics.update(topic_info.get("concepts", []))
+    all_topics.update(topic_info.get("approved", []))
+    allowed_topics = sorted(all_topics)
+
+    print(f"📋 Loaded {len(allowed_topics)} allowed topics "
+          f"({len(topic_info.get('maps', []))} maps, "
+          f"{len(topic_info.get('concepts', []))} concepts, "
+          f"{len(topic_info.get('approved', []))} approved)")
+
+    return allowed_topics, topic_info
+
+
 def run_agent(
     input_file: str,
     output_dir: str,
     origin: str = "",
-    verbose: bool = False
+    verbose: bool = False,
+    topics_file: Optional[str] = None,
+    unresolvable_dir: Optional[str] = None,
+    rare_types_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run the research extractor agent on a batch of references.
-    
+
     Uses hybrid mode: fast deterministic path for obvious references,
     agent fallback for ambiguous cases or failures.
-    
+
     Processes all references from an input file, extracting metadata and
     generating structured markdown notes. Each reference is processed with
     a fresh agent context to prevent context window issues.
-    
+
     Args:
         input_file: Path to text file containing references
         output_dir: Directory for saving markdown files
         origin: Source book/document name (e.g., "[[Book Title]]")
         verbose: If True, print detailed agent reasoning and tool calls
-    
+        topics_file: Optional path to JSON file with allowed topics vocabulary.
+            Structure: {"maps": [...], "concepts": [...], "approved": [...]}
+        unresolvable_dir: Optional absolute path for Unresolvable file output.
+        rare_types_dir: Optional absolute path for Post/Quote file output.
+
     Returns:
         Summary dictionary with:
         - total: Total references processed
@@ -66,7 +104,7 @@ def run_agent(
         - fast_path: Number using deterministic path
         - agent_path: Number using agent path
         - details: List of results for each reference
-    
+
     Example:
         >>> result = run_agent(
         ...     input_file="/path/to/references.txt",
@@ -76,6 +114,11 @@ def run_agent(
         ... )
         >>> print(f"Success: {result['success']}/{result['total']}")
     """
+    # Load topic vocabulary if provided
+    allowed_topics = None
+    topic_info = None
+    if topics_file:
+        allowed_topics, topic_info = _load_topics_file(topics_file)
     print(f"\n{'#'*80}")
     print(f"# Research Extractor Agent (Hybrid Mode)")
     print(f"{'#'*80}")
@@ -196,6 +239,10 @@ def run_agent(
             try:
                 result = process_reference_deterministic(
                     id_value, classification, origin, output_dir,
+                    allowed_topics=allowed_topics,
+                    unresolvable_dir=unresolvable_dir,
+                    rare_types_dir=rare_types_dir,
+                    topic_info=topic_info,
                 )
 
                 if result is not None:
@@ -352,7 +399,7 @@ def run_agent(
             batch_indices = [idx for idx, _ in batch_items]
             batch_citations = [ref for _, ref in batch_items]
 
-            batch_extractions = extract_minimal_metadata_batch(batch_citations)
+            batch_extractions = extract_minimal_metadata_batch(batch_citations, allowed_topics=allowed_topics)
 
             for local_idx, global_idx in enumerate(batch_indices):
                 extraction = batch_extractions.get(local_idx)
@@ -416,6 +463,10 @@ def run_agent(
             det_result = process_reference_deterministic(
                 ref, classification, origin, output_dir,
                 pre_extracted_metadata=pre_extracted.get(i),
+                allowed_topics=allowed_topics,
+                unresolvable_dir=unresolvable_dir,
+                rare_types_dir=rare_types_dir,
+                topic_info=topic_info,
             )
 
             if det_result is not None:
@@ -537,6 +588,9 @@ def run_agent_from_mapping(
     mapping_file: str,
     output_dir: str,
     verbose: bool = False,
+    topics_file: Optional[str] = None,
+    unresolvable_dir: Optional[str] = None,
+    rare_types_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run the research extractor agent on multiple files using a mapping file.
@@ -549,11 +603,13 @@ def run_agent_from_mapping(
         mapping_file: Path to JSON mapping file
         output_dir: Directory for saving markdown files
         verbose: If True, print detailed agent reasoning
+        topics_file: Optional path to JSON file with allowed topics vocabulary.
+        unresolvable_dir: Optional absolute path for Unresolvable file output.
+        rare_types_dir: Optional absolute path for Post/Quote file output.
 
     Returns:
         Aggregate summary with per-file results
     """
-    import json
     from pathlib import Path
 
     mapping_path = Path(mapping_file)
@@ -600,6 +656,9 @@ def run_agent_from_mapping(
             output_dir=output_dir,
             origin=origin,
             verbose=verbose,
+            topics_file=topics_file,
+            unresolvable_dir=unresolvable_dir,
+            rare_types_dir=rare_types_dir,
         )
 
         aggregate["files_success"] += 1
@@ -637,6 +696,9 @@ if __name__ == "__main__":
     parser.add_argument("--origin", default="", help='Source book/document name (e.g., "[[Book Title]]")')
     parser.add_argument("--mapping-file", help="Path to JSON mapping file (filename -> origin)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed agent reasoning")
+    parser.add_argument("--topics-file", help="Path to JSON file with allowed topics vocabulary")
+    parser.add_argument("--unresolvable-dir", help="Absolute path for Unresolvable file output (overrides default)")
+    parser.add_argument("--rare-types-dir", help="Absolute path for Post/Quote file output (overrides default)")
     args = parser.parse_args()
 
     if args.mapping_file:
@@ -644,6 +706,9 @@ if __name__ == "__main__":
             mapping_file=args.mapping_file,
             output_dir=args.output_dir,
             verbose=args.verbose,
+            topics_file=args.topics_file,
+            unresolvable_dir=args.unresolvable_dir,
+            rare_types_dir=args.rare_types_dir,
         )
 
         print(f"\n✨ Final Summary:")
@@ -659,6 +724,9 @@ if __name__ == "__main__":
             output_dir=args.output_dir,
             origin=args.origin,
             verbose=args.verbose,
+            topics_file=args.topics_file,
+            unresolvable_dir=args.unresolvable_dir,
+            rare_types_dir=args.rare_types_dir,
         )
 
         print(f"\n✨ Final Summary:")

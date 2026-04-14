@@ -33,6 +33,7 @@ from research_extractor_prompts import (
 from research_extractor_constants import (
     MODEL,
     FOLDER_MAP,
+    RARE_TYPE_FOLDER,
     FETCH_TIMEOUT,
     OPENROUTER_API_BASE,
     PATTERN_DOUBLE_NEWLINE,
@@ -297,10 +298,32 @@ def _extract_origin_from_file(file_path: str) -> list:
         return []
 
 
-def _build_markdown_content(metadata: Dict, note: Dict, source_type: str, origin: Any) -> str:
+def _format_topic_wikilink(topic: str, topic_info: Optional[Dict[str, List[str]]] = None) -> str:
+    """Format a topic name as a wikilink with correct suffix.
+
+    Args:
+        topic: The topic name (e.g., "Ethics", "Game Theory", "Uncategorized")
+        topic_info: Optional dict with 'maps', 'concepts', 'approved' lists.
+            When provided, determines the wikilink format based on type.
+            When None, defaults to (Map) suffix for backward compatibility.
+    """
+    if topic == "Uncategorized":
+        return f"  - [[Uncategorized]]"
+    if topic_info is None:
+        return f"  - [[{topic} (Map)]]"
+    if topic in topic_info.get("concepts", []):
+        return f"  - [[{topic}]]"
+    # Maps and approved topics get (Map) suffix
+    return f"  - [[{topic} (Map)]]"
+
+
+def _build_markdown_content(metadata: Dict, note: Dict, source_type: str, origin: Any,
+                            topic_info: Optional[Dict[str, List[str]]] = None) -> str:
     """Shared markdown content builder."""
     authors = "\n".join(f"  - [[{a}]]" for a in metadata.get("authors", [DEFAULT_AUTHOR]))
-    topics = "\n".join(f"  - [[{t} (Map)]]" for t in note.get("topics", [])[:3])
+    topics = "\n".join(
+        _format_topic_wikilink(t, topic_info) for t in note.get("topics", [])[:3]
+    )
     body = "\n\n".join(f"## {k}\n\n{v}" for k, v in note.get("body_sections", {}).items())
     timestamps = get_timestamp_metadata()
     
@@ -783,22 +806,41 @@ def _fetch_web_content_core(identifier_value: str, url: str = None) -> Dict[str,
         return None
 
 
-def _generate_note_core(source_type: str, content: str) -> Dict[str, Any]:
+def _generate_note_core(source_type: str, content: str,
+                        allowed_topics: Optional[List[str]] = None) -> Dict[str, Any]:
     """Core logic for generating structured notes."""
     try:
-        prompt = get_generate_note_prompt(source_type, content)
+        prompt = get_generate_note_prompt(source_type, content, allowed_topics=allowed_topics)
         resp = call_llm(prompt, json_format=True)
-        return json.loads(resp.choices[0].message.content)
+        result = json.loads(resp.choices[0].message.content)
+        # Validate topics against allowed list
+        if allowed_topics and "topics" in result:
+            result["topics"] = [
+                t if t in allowed_topics else "Uncategorized"
+                for t in result["topics"]
+            ]
+        return result
     except Exception as e:
         return {"error": str(e)}
 
 
-def _save_markdown_core(metadata: Dict, note: Dict, source_type: str, origin: str, output_dir: str) -> Dict[str, str]:
+def _save_markdown_core(metadata: Dict, note: Dict, source_type: str, origin: str, output_dir: str,
+                        unresolvable_dir: Optional[str] = None,
+                        rare_types_dir: Optional[str] = None,
+                        topic_info: Optional[Dict[str, List[str]]] = None) -> Dict[str, str]:
     """Core logic for saving markdown files. Appends Origin to existing files instead of overwriting."""
     try:
         folder = FOLDER_MAP.get(source_type, DEFAULT_OUTPUT_FOLDER)
         filename = _generate_filename(metadata)
-        file_path = os.path.join(output_dir, folder, f"{filename}.md")
+
+        # Route Unresolvable to separate directory if configured
+        if source_type == "Unresolvable" and unresolvable_dir:
+            file_path = os.path.join(unresolvable_dir, f"{filename}.md")
+        # Route rare types (Post, Quote) to inbox if configured
+        elif source_type in ("Post", "Quote") and rare_types_dir:
+            file_path = os.path.join(rare_types_dir, f"{filename}.md")
+        else:
+            file_path = os.path.join(output_dir, folder, f"{filename}.md")
 
         if os.path.exists(file_path):
             # File already exists - only append the new origin to avoid destroying manual edits
@@ -818,7 +860,7 @@ def _save_markdown_core(metadata: Dict, note: Dict, source_type: str, origin: st
             return {"file_path": file_path, "note": "Appended origin to existing file"}
 
         final_origin = origin
-        md_content = _build_markdown_content(metadata, note, source_type, final_origin)
+        md_content = _build_markdown_content(metadata, note, source_type, final_origin, topic_info=topic_info)
 
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
@@ -956,36 +998,50 @@ def fetch_book_metadata(book_title: str) -> Dict[str, Any]:
     return fetch_google_books_metadata(book_title)
 
 
-def _extract_minimal_metadata(citation_text: str) -> Dict[str, Any]:
+def _extract_minimal_metadata(citation_text: str, allowed_topics: Optional[List[str]] = None) -> Dict[str, Any]:
     """Core logic for extracting basic metadata from citation text."""
+    if allowed_topics:
+        topic_instruction = f'topics (select 1-3 from ONLY this list: {", ".join(allowed_topics)}; use "Uncategorized" if none fit)'
+    else:
+        topic_instruction = "topics"
+
     prompt = f"""Extract bibliographic data from this citation:
 
 {citation_text}
 
-Extract: author names, year (4-digit), title, venue.
+Extract: author names, year (4-digit), title, venue, {topic_instruction}.
 Return JSON: {{"title": str, "authors": [str], "year": str, "publication_venue": str, "summary": str, "topics": [str]}}"""
 
     resp = call_llm(prompt, json_format=True)
     raw = json.loads(resp.choices[0].message.content)
     result = MinimalMetadataResponse.model_validate(raw)
-    return result.to_metadata_dict(citation_text)
+    metadata = result.to_metadata_dict(citation_text)
+    # Validate topics against allowed list
+    if allowed_topics and "topics" in metadata:
+        metadata["topics"] = [
+            t if t in allowed_topics else "Uncategorized"
+            for t in metadata["topics"]
+        ]
+    return metadata
 
 
 def extract_minimal_metadata_batch(
     citations: List[str],
+    allowed_topics: Optional[List[str]] = None,
 ) -> Dict[int, Optional[Dict[str, Any]]]:
     """
     Batch extraction of minimal metadata from multiple citations in a single LLM call.
 
     Args:
         citations: List of citation text strings
+        allowed_topics: Optional list of allowed topic names for constrained topic assignment.
 
     Returns:
         Dict mapping 0-based index to metadata dict.
         Returns empty dict on total failure (triggers per-reference fallback).
     """
     try:
-        prompt = get_batch_extract_minimal_metadata_prompt(citations)
+        prompt = get_batch_extract_minimal_metadata_prompt(citations, allowed_topics=allowed_topics)
         resp = call_llm(prompt, json_format=True)
         raw = json.loads(_repair_json(resp.choices[0].message.content))
         batch_result = BatchMinimalMetadataResponse.model_validate(raw)
@@ -996,7 +1052,14 @@ def extract_minimal_metadata_batch(
             if key not in batch_result.extractions:
                 output[i] = None
                 continue
-            output[i] = batch_result.extractions[key].to_metadata_dict(citation_text)
+            metadata = batch_result.extractions[key].to_metadata_dict(citation_text)
+            # Validate topics against allowed list
+            if allowed_topics and "topics" in metadata:
+                metadata["topics"] = [
+                    t if t in allowed_topics else "Uncategorized"
+                    for t in metadata["topics"]
+                ]
+            output[i] = metadata
 
         return output
 
@@ -1325,17 +1388,21 @@ def _save_as_unresolvable(
     origin: str,
     output_dir: str,
     reason: str,
+    allowed_topics: Optional[List[str]] = None,
+    unresolvable_dir: Optional[str] = None,
+    topic_info: Optional[Dict[str, List[str]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fallback: extract minimal metadata from citation text and save as Unresolvable."""
     try:
-        metadata = _extract_minimal_metadata(reference)
+        metadata = _extract_minimal_metadata(reference, allowed_topics=allowed_topics)
         _enrich_metadata_authors(metadata, reference)
         note = {
             "summary": metadata.get("summary", ""),
             "topics": metadata.get("topics", []),
             "body_sections": metadata.get("body_sections", {})
         }
-        save_result = _save_markdown_core(metadata, note, "Unresolvable", origin, output_dir)
+        save_result = _save_markdown_core(metadata, note, "Unresolvable", origin, output_dir,
+                                          unresolvable_dir=unresolvable_dir, topic_info=topic_info)
         if "error" in save_result:
             return None
         return {
@@ -1355,6 +1422,10 @@ def process_reference_deterministic(
     origin: str,
     output_dir: str,
     pre_extracted_metadata: Optional[Dict[str, Any]] = None,
+    allowed_topics: Optional[List[str]] = None,
+    unresolvable_dir: Optional[str] = None,
+    rare_types_dir: Optional[str] = None,
+    topic_info: Optional[Dict[str, List[str]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Fast deterministic processing without agent overhead.
@@ -1366,12 +1437,23 @@ def process_reference_deterministic(
     Args:
         pre_extracted_metadata: If provided, used instead of calling
             _extract_minimal_metadata for Unresolvable/Other references.
+        allowed_topics: Optional list of allowed topic names for constrained assignment.
+        unresolvable_dir: Optional absolute path for Unresolvable output.
+        rare_types_dir: Optional absolute path for Post/Quote output.
+        topic_info: Optional dict with 'maps', 'concepts', 'approved' lists for formatting.
     """
     source_type = classification["source_type"]
     original_source_type = source_type
     identifier_type = classification["identifier_type"]
     identifier_value = classification["identifier_value"]
     url = classification.get("url")
+
+    # Shared kwargs for _save_as_unresolvable calls
+    _unresolvable_kwargs = dict(
+        allowed_topics=allowed_topics,
+        unresolvable_dir=unresolvable_dir,
+        topic_info=topic_info,
+    )
 
     try:
         metadata = None
@@ -1384,10 +1466,10 @@ def process_reference_deterministic(
             if metadata and "error" not in metadata and identifier_type == "Title":
                 is_valid, score = _validate_metadata_match(reference, metadata)
                 if not is_valid:
-                    metadata = _extract_minimal_metadata(reference)
+                    metadata = _extract_minimal_metadata(reference, allowed_topics=allowed_topics)
                     source_type = "Unresolvable"
             elif not metadata or "error" in metadata:
-                metadata = _extract_minimal_metadata(reference)
+                metadata = _extract_minimal_metadata(reference, allowed_topics=allowed_topics)
                 source_type = "Unresolvable"
 
         elif source_type == "Article" and identifier_type == "Title":
@@ -1396,10 +1478,10 @@ def process_reference_deterministic(
             if metadata and "error" not in metadata:
                 is_valid, score = _validate_metadata_match(reference, metadata)
                 if not is_valid:
-                    metadata = _extract_minimal_metadata(reference)
+                    metadata = _extract_minimal_metadata(reference, allowed_topics=allowed_topics)
                     source_type = "Unresolvable"
             else:
-                metadata = _extract_minimal_metadata(reference)
+                metadata = _extract_minimal_metadata(reference, allowed_topics=allowed_topics)
                 source_type = "Unresolvable"
 
         elif source_type == "Book":
@@ -1407,15 +1489,15 @@ def process_reference_deterministic(
 
         elif source_type == "Unresolvable" or source_type == "Other":
             # Use pre-extracted metadata if available, otherwise call LLM
-            metadata = pre_extracted_metadata or _extract_minimal_metadata(reference)
+            metadata = pre_extracted_metadata or _extract_minimal_metadata(reference, allowed_topics=allowed_topics)
             source_type = "Unresolvable"  # Normalize for consistent handling
 
         else:
             # Article, Lecture, or other web content with URL
             metadata = _fetch_web_content_core(identifier_value, url)
-        
+
         if not metadata or ("error" in metadata and source_type != "Unresolvable"):
-            metadata = _extract_minimal_metadata(reference)
+            metadata = _extract_minimal_metadata(reference, allowed_topics=allowed_topics)
             source_type = "Unresolvable"
 
         # Enrich missing authors from reference text (web APIs often lack author info)
@@ -1432,10 +1514,10 @@ def process_reference_deterministic(
                     "source_type": source_type
                 }
             # Book save failed — degrade to Unresolvable
-            metadata = _extract_minimal_metadata(reference)
+            metadata = _extract_minimal_metadata(reference, allowed_topics=allowed_topics)
             _enrich_metadata_authors(metadata, reference)
             source_type = "Unresolvable"
-        
+
         # Step 3: Unresolvable path - save directly without generate_note LLM call
         if source_type == "Unresolvable":
             note = {
@@ -1443,7 +1525,8 @@ def process_reference_deterministic(
                 "topics": metadata.get("topics", []),
                 "body_sections": metadata.get("body_sections", {})
             }
-            save_result = _save_markdown_core(metadata, note, source_type, origin, output_dir)
+            save_result = _save_markdown_core(metadata, note, source_type, origin, output_dir,
+                                              unresolvable_dir=unresolvable_dir, topic_info=topic_info)
             if "error" in save_result:
                 return None
 
@@ -1455,37 +1538,43 @@ def process_reference_deterministic(
                 "original_source_type": original_source_type,
                 "note": "Fallback: created minimal note from citation text"
             }
-        
+
         # Step 4: Paper/Article/Lecture - generate note and save
         content = metadata.get("content_for_note", "")
         if not content:
             return _save_as_unresolvable(
                 reference, original_source_type, origin, output_dir,
                 "no content available for note generation",
+                **_unresolvable_kwargs,
             )
 
-        note = _generate_note_core(source_type, content)
+        note = _generate_note_core(source_type, content, allowed_topics=allowed_topics)
         if "error" in note:
             return _save_as_unresolvable(
                 reference, original_source_type, origin, output_dir,
                 "note generation failed",
+                **_unresolvable_kwargs,
             )
-        
-        save_result = _save_markdown_core(metadata, note, source_type, origin, output_dir)
+
+        save_result = _save_markdown_core(metadata, note, source_type, origin, output_dir,
+                                          unresolvable_dir=unresolvable_dir,
+                                          rare_types_dir=rare_types_dir,
+                                          topic_info=topic_info)
         if "error" in save_result:
             return None
-        
+
         return {
             "status": "success",
             "path": save_result.get("file_path"),
             "source_type": source_type
         }
-    
+
     except Exception:
         # Final fallback: try to save as Unresolvable
         return _save_as_unresolvable(
             reference, original_source_type, origin, output_dir,
             "exception during processing",
+            **_unresolvable_kwargs,
         )
 
 

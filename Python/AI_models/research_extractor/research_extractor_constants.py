@@ -37,6 +37,9 @@ FOLDER_MAP = {
     "Unresolvable": "Unresolvable",
 }
 
+# Folder for rare source types (Post, Quote) when no dedicated vault folder exists
+RARE_TYPE_FOLDER = "Inbox"
+
 # Hybrid Mode Configuration
 HYBRID_MODE_ENABLED = True  # Enable fast deterministic path for obvious references
 CONFIDENCE_THRESHOLD = 0.80  # Minimum confidence to use fast path (0.0-1.0)
