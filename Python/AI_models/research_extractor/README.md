@@ -203,7 +203,7 @@ For each reference, the agent follows this workflow:
 Edit `research_extractor_constants.py`:
 
 ```python
-MODEL = "google/gemini-2.5-flash"  # Current default
+MODEL = "google/gemini-3.1-flash-lite-preview"  # Current default
 # Or try: "anthropic/claude-3-haiku", "openai/gpt-4", etc.
 ```
 

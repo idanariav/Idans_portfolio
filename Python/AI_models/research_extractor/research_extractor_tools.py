@@ -319,14 +319,8 @@ If invalid, respond: "INVALID: [reason] | SUGGEST: [better_filename]"
 
 Generate filenames in the format: "Title Words (reference)" - concise, meaningful, and lowercase keywords."""
 
-        client = OpenAI(
-            api_key=api_key,
-            base_url=OPENROUTER_API_BASE,
-            default_headers={"HTTP-Referer": "research-extractor", "X-Title": "research-extractor"}
-        )
-
         response = client.chat.completions.create(
-            model="google/gemini-2.5-flash-lite",
+            model=MODEL,
             messages=[
                 {"role": "user", "content": validation_prompt}
             ],
