@@ -428,7 +428,9 @@ def _build_markdown_content(metadata: Dict, note: Dict, source_type: str, origin
         origin_yaml = "\n".join(f'  - "{o}"' for o in origin)
     else:
         origin_yaml = f'  - "{origin}"'
-    
+
+    title = metadata.get('title', DEFAULT_TITLE).replace(":", "")
+
     return f"""---
 UUID: {timestamps['uuid']}
 Created: {timestamps['created']}
@@ -444,7 +446,7 @@ Year: {metadata.get('year', DEFAULT_YEAR)}
 Topic:
 {topics}
 Link: {metadata.get('url', '')}
-Title: {metadata.get('title', DEFAULT_TITLE)}
+Title: {title}
 Source-Type: {source_type}
 Origin:
 {origin_yaml}
