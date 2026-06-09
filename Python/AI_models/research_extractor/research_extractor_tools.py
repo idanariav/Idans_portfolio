@@ -356,9 +356,30 @@ Generate filenames in the format: "Title Words (reference)" - concise, meaningfu
         return True, f"Validation skipped ({type(e).__name__})", None
 
 
+def _sanitize_unicode_for_filename(text: str) -> str:
+    """Replace problematic Unicode characters in titles before using as filenames."""
+    replacements = [
+        ("“", '"'),   # left double quotation mark → straight double quote
+        ("”", '"'),   # right double quotation mark → straight double quote
+        ("‘", "'"),   # left single quotation mark → straight apostrophe
+        ("’", "'"),   # right single quotation mark → straight apostrophe
+        ("–", "-"),   # en-dash → hyphen
+        ("—", "-"),   # em-dash → hyphen
+        (" ", " "),   # non-breaking space → regular space
+        (" ", " "),   # hair space → regular space
+        ("​", ""),    # zero-width space → remove
+        ("ﬁ", "fi"),  # ﬁ ligature → fi
+        ("ﬂ", "fl"),  # ﬂ ligature → fl
+    ]
+    for src, dst in replacements:
+        text = text.replace(src, dst)
+    return text
+
+
 def _generate_filename(metadata: Dict) -> str:
     """Generate standardized filename: 'Title (reference)'."""
     title = metadata.get("title", DEFAULT_TITLE)
+    title = _sanitize_unicode_for_filename(title)
     title_clean = re.sub(PATTERN_INVALID_FILENAME_CHARS, "", title)
     filename = f"{title_clean} (reference)"
     return filename[:200]  # Keep reasonable length
@@ -938,7 +959,7 @@ def _save_markdown_core(metadata: Dict, note: Dict, source_type: str, origin: st
             if not is_valid and suggested_filename:
                 import logging
                 logging.info(f"Filename validation ({source_type}): {validation_reason}. Using suggested: {suggested_filename}")
-                filename = suggested_filename
+                filename = _sanitize_unicode_for_filename(suggested_filename)
             elif not is_valid:
                 import logging
                 logging.warning(f"Filename validation ({source_type}) failed: {validation_reason}. Using original: {filename}")
