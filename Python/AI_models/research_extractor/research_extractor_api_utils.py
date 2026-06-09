@@ -379,9 +379,12 @@ def normalize_paper_metadata(data, source, id_type=None):
             }
         
         elif source == "openalex":
-            work = data.get("results", [data])[0] if "results" in data else data
-            if "results" in data and not data["results"]:
-                return None
+            if "results" in data:
+                if not data["results"]:
+                    return None
+                work = data["results"][0]
+            else:
+                work = data
             
             authors = [a["author"]["display_name"] for a in work.get("authorships", [])]
             
