@@ -8,7 +8,7 @@ components including API endpoints, model settings, folder mappings, and timeout
 # LLM Configuration
 # Using Gemini 2.5 Flash - has optional thinking capabilities without the
 # strict reasoning_details requirement that Gemini 3 models have
-MODEL = "google/gemini-3.1-flash-lite-preview"
+MODEL = "google/gemini-3.5-flash-lite"
 
 # API Endpoints
 SEMANTIC_SCHOLAR_API_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
