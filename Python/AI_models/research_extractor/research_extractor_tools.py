@@ -434,6 +434,19 @@ def _format_topic_wikilink(topic: str, topic_info: Optional[Dict[str, List[str]]
     return f'  - "[[{topic} (Map)]]"'
 
 
+def _yaml_quote(value: Any) -> str:
+    """Return a YAML-safe double-quoted scalar for an arbitrary string value.
+
+    Frontmatter here is hand-assembled rather than emitted via a YAML dumper, so any
+    string that could start with a YAML indicator character ([, {, ", ', -, ?, :, *,
+    &, !, %, @, `) or contain an embedded '"' or ': ' must be quoted and escaped
+    manually, or the frontmatter fails to parse (e.g. scraped titles like
+    '[PDF] Some Title' or '"Quoted Phrase" Rest of Title').
+    """
+    escaped = str(value or "").replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    return f'"{escaped}"'
+
+
 def _build_markdown_content(metadata: Dict, note: Dict, source_type: str, origin: Any,
                             topic_info: Optional[Dict[str, List[str]]] = None) -> str:
     """Shared markdown content builder."""
@@ -450,7 +463,7 @@ def _build_markdown_content(metadata: Dict, note: Dict, source_type: str, origin
     else:
         origin_yaml = f'  - "{origin}"'
 
-    title = metadata.get('title', DEFAULT_TITLE).replace(":", "")
+    title = _yaml_quote(metadata.get('title', DEFAULT_TITLE))
 
     return f"""---
 UUID: {timestamps['uuid']}
@@ -462,7 +475,7 @@ Version: {FRONTMATTER_VERSION}
 publish: {str(FRONTMATTER_PUBLISH_DEFAULT).lower()}
 Authors:
 {authors}
-Summary: {note.get('summary', '')}
+Summary: {_yaml_quote(note.get('summary', ''))}
 Year: {metadata.get('year', DEFAULT_YEAR)}
 Topic:
 {topics}
